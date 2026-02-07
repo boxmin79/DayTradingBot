@@ -2,13 +2,21 @@ import win32com.client
 import pandas as pd
 from API.Daishin.api import DaishinAPI
 
-class DaishinStockChart(DaishinAPI): # 상속 시전
+class DaishinStockChart(DaishinAPI): # DaishinAPI를 상속받음
     def __init__(self):
-        super().__init__() # 부모 클래스의 생성자 호출
-        self.obj_stock_chart = win32com.client.Dispatch("CpSysDib.StockChart")
+        # 1. 부모 클래스의 생성자를 반드시 호출해야 wait_for_limit 등을 사용할 수 있습니다.
+        super().__init__() 
+        
+        if self.obj_utils is not None:
+            self.obj_stock_chart = win32com.client.Dispatch("CpSysDib.StockChart")
+        else:
+            self.obj_stock_chart = None
 
     def get_stock_chart(self, code, count, chart_type, interval):
-        # 수집 전 제한 확인 (부모의 메서드 사용)
+        if self.obj_stock_chart is None:
+            return pd.DataFrame()
+
+        # 2. 부모(DaishinAPI)로부터 상속받은 wait_for_limit 호출
         self.wait_for_limit(1)
 
         self.obj_stock_chart.SetInputValue(0, code)

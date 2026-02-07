@@ -5,25 +5,35 @@ class Strategy(ABC):
     """
     주가 데이터를 기반으로 전략을 수행하는 최상위 부모 클래스
     """
-    def __init__(self, name: str):
+    def __init__(self, name: str, params: dict = None):
         self.name = name
+        self.params = params if params else {}
+        # 전략 구동에 필요한 최소 데이터 행 수 (예: 20일 이평선은 최소 20행)
+        self.min_data_required = self.params.get('min_data', 1)
 
     @abstractmethod
     def apply_strategy(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        주가 데이터프레임을 입력받아 전략 로직(지표 계산, 신호 생성 등)을 적용합니다.
-        
-        Args:
-            df (pd.DataFrame): 'open', 'high', 'low', 'close', 'volume' 등을 포함한 주가 데이터
-            
-        Returns:
-            pd.DataFrame: 전략 로직이 반영된 데이터프레임
+        [백테스트용] 전체 데이터프레임에 전략 지표 및 신호를 생성합니다.
         """
         pass
 
     @abstractmethod
     def get_signal(self, df: pd.DataFrame):
         """
-        데이터프레임의 가장 최근 행(현재 시점)을 기준으로 매수/매도 신호를 판단합니다.
+        [실시간용] 현재 시점의 데이터를 바탕으로 매수(True)/매도(False) 신호를 반환합니다.
         """
+        # 데이터 부족 시 처리 로직을 부모에서 공통으로 가질 수 있음
+        if len(df) < self.min_data_required:
+            return False
         pass
+
+    def calculate_common_indicators(self, df: pd.DataFrame):
+        """
+        [공통 기능] 이동평균선, RSI 등 여러 전략에서 자주 쓰는 지표를 계산합니다.
+        필요 시 자식 클래스에서 super().calculate_common_indicators(df)로 호출
+        """
+        # 예시: 종가 기준 5일, 20일 이동평균선
+        df['ma5'] = df['close'].rolling(window=5).mean()
+        df['ma20'] = df['close'].rolling(window=20).mean()
+        return df
