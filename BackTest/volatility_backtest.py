@@ -1,60 +1,58 @@
 import pandas as pd
-import numpy as np
 from .backtest import Backtest
 
 class VolatilityBacktest(Backtest):
+    """
+    변동성 돌파 전용 실행기:
+    부모 엔진의 기능을 활용하여 실제 진입/청산 시뮬레이션을 수행합니다.
+    """
     def __init__(self, strategy):
         super().__init__(strategy)
 
     def run(self, df: pd.DataFrame, ticker=None, fee=0.0015): 
+        # 1. 시계열 데이터 전처리
         if not isinstance(df.index, pd.DatetimeIndex):
-            try:
-                dt_str = df['date'].astype(str) + df['time'].astype(str).str.zfill(4)
-                df.index = pd.to_datetime(dt_str, format='%Y%m%d%H%M')
-            except: return pd.DataFrame(), None
+            dt_str = df['date'].astype(str) + df['time'].astype(str).str.zfill(4)
+            df.index = pd.to_datetime(dt_str, format='%Y%m%d%H%M')
 
+        # 2. 전략 적용 (목표가 계산)
         df = self.strategy.apply_strategy(df)
         daily_records = []
-        holding_times = []
-        total_commissions = 0 # 총 지불 비용 합계
-
+        
+        # 3. 매매 시뮬레이션 로직
         grouped = df.groupby(df.index.date)
         for date, day_df in grouped:
             target_price = day_df['target_price'].iloc[0]
             if pd.isna(target_price) or target_price <= 0: continue
 
+            # 돌파 여부 확인
             breakout = day_df[day_df['high'] >= target_price]
             if not breakout.empty:
                 first_candle = breakout.iloc[0]
                 entry_time = breakout.index[0]
-                exit_time = day_df.index[-1]
-                holding_times.append((exit_time - entry_time).seconds / 60)
-
+                
+                # 진입가/청산가 결정 (슬리피지 및 수수료 반영)
                 real_buy_price = max(target_price, first_candle['open'])
                 sell_price = day_df['close'].iloc[-1]
                 
-                # 비용 분석
-                comm_cost = fee * 2 # 왕복 수수료+세금
-                total_commissions += comm_cost
+                real_ret = (sell_price - real_buy_price) / real_buy_price - (fee * 2)
                 
-                real_ret = (sell_price - real_buy_price) / real_buy_price - comm_cost
-                theo_ret = (sell_price - target_price) / target_price - comm_cost
-                slip_cost = theo_ret - real_ret
-            else:
-                real_ret = slip_cost = 0.0
-                
-            daily_records.append({'date': date, 'return': real_ret, 'slippage_cost': slip_cost})
+                daily_records.append({
+                    'date': date,
+                    'entry_time': entry_time,
+                    'target_price': target_price,
+                    'entry_price': real_buy_price,
+                    'exit_price': sell_price,
+                    'return': real_ret
+                })
             
         result_df = pd.DataFrame(daily_records)
         if result_df.empty: return pd.DataFrame(), None
         result_df.set_index('date', inplace=True)
         
+        # 4. 공통 엔진을 통한 지표 산출 및 저장
         metrics = self.calculate_metrics(result_df)
-        if metrics:
-            metrics['평균보유시간(분)'] = f"{np.mean(holding_times):.1f}" if holding_times else "0"
-            metrics['누적비용(비중)'] = f"{total_commissions:.2%}" # 전체 매매 횟수 대비 누적 비용
-            metrics['총슬리피지'] = f"{result_df['slippage_cost'].sum():.2%}"
-        
-        if ticker:
-            self.save_to_csv(result_df, ticker, metrics=metrics)
+        if metrics and ticker:
+            self.save_results(result_df, metrics, ticker)
+                
         return result_df, metrics

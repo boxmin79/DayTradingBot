@@ -1,75 +1,69 @@
 import pandas as pd
 import numpy as np
-from abc import ABC, abstractmethod
 import os
+from abc import ABC, abstractmethod
 
 class Backtest(ABC):
     def __init__(self, strategy):
         self.strategy = strategy
-        self.results = None
+        self.base_path = os.path.join("data", "backtest", self.strategy.name)
+        self.summary_path = os.path.join(self.base_path, "summary")
+        os.makedirs(self.summary_path, exist_ok=True)
+        
+        # [추가] 분석된 종목들의 요약을 담을 리스트
+        self.total_summary_list = []
+        print(f"    [엔진] 보고서 저장 경로 준비: {self.base_path}")
 
     @abstractmethod
-    def run(self, df: pd.DataFrame):
+    def run(self, df: pd.DataFrame, ticker=None):
         pass
 
-    def calculate_metrics(self, df: pd.DataFrame):
-        """
-        심화 분석 지표(수익성, 안정성, 일관성, 분포) 통합 계산
-        """
-        if df.empty or 'return' not in df.columns or (df['return'] == 0).all():
-            return None
+    def add_summary(self, metrics):
+        """분석된 종목의 지표를 엔진 내부 리스트에 추가"""
+        if metrics:
+            self.total_summary_list.append(metrics)
 
-        # 1. 수익성 및 리스크
+    def save_total_report(self):
+        """엔진에 쌓인 모든 결과를 합쳐서 수익률 순으로 CSV 저장"""
+        if not self.total_summary_list:
+            return
+            
+        report_path = os.path.join(self.base_path, "total_investment_report.csv")
+        df = pd.DataFrame(self.total_summary_list)
+        
+        # 수익률 기준 내림차순 정렬 (문자열 % 제거 후 계산)
+        if '총수익률' in df.columns:
+            df['sort_val'] = df['총수익률'].str.replace('%','').astype(float)
+            df = df.sort_values(by='sort_val', ascending=False).drop(columns=['sort_val'])
+        
+        df.to_csv(report_path, index=False, encoding='utf-8-sig')
+        print(f"\n    [엔진] 통합 리포트 업데이트 완료: {len(df)} 종목 기록됨")
+
+    def calculate_metrics(self, df: pd.DataFrame):
+        """성과 지표 계산 로직"""
+        if df.empty or 'return' not in df.columns: return None
         df['cum_return'] = (1 + df['return']).cumprod()
         total_return = df['cum_return'].iloc[-1] - 1
         mdd = ((df['cum_return'] / df['cum_return'].cummax()) - 1).min()
+        trades = df[df['return'] != 0]
+        if len(trades) == 0: return None
+        win_rate = len(trades[trades['return'] > 0]) / len(trades)
         
-        # 2. 매매 기록
-        trades = df[df['return'] != 0].copy()
-        num_trades = len(trades)
-        wins = trades[trades['return'] > 0]['return']
-        losses = trades[trades['return'] < 0]['return']
-        
-        win_rate = len(wins) / num_trades
-        avg_profit = wins.mean() if not wins.empty else 0
-        avg_loss = losses.mean() if not losses.empty else 0
-        
-        # 3. 일관성 및 분포 분석
-        # [수익 일관성] 상위 5% 제외 수익률
-        if num_trades > 10:
-            threshold = trades['return'].quantile(0.95)
-            adj_return = (1 + trades[trades['return'] < threshold]['return']).prod() - 1
-        else:
-            adj_return = total_return
-
-        # [매매 분포] 월별 매매 횟수 변동계수
-        trades['month'] = pd.to_datetime(trades.index).to_period('M')
-        monthly_counts = trades.groupby('month').size()
-        consistency_score = monthly_counts.std() / monthly_counts.mean() if not monthly_counts.empty else 9.9
-        
-        # 4. 통계적 우위
-        expectancy = (win_rate * avg_profit) + ((1 - win_rate) * avg_loss)
-        std = trades['return'].std()
-        sqn = (trades['return'].mean() / std) * np.sqrt(num_trades) if std != 0 else 0
-
-        metrics = {
+        return {
             "총수익률": f"{total_return:.2%}",
-            "조정수익률": f"{adj_return:.2%}",
             "MDD": f"{mdd:.2%}",
-            "기대값": f"{expectancy:.4f}",
-            "SQN": f"{sqn:.2f}",
-            "매매분포지수": f"{consistency_score:.2f}",
             "승률": f"{win_rate:.2%}",
-            "매매횟수": num_trades
+            "매매횟수": len(trades),
+            "SQN": f"{(trades['return'].mean() / trades['return'].std() * np.sqrt(len(trades))):.2f}" if len(trades) > 1 else "0.00",
+            "기대값": f"{trades['return'].mean():.4f}"
         }
-        return metrics
 
-    def save_to_csv(self, df: pd.DataFrame, ticker: str, metrics: dict = None):
-        output_dir = "data/backtest"
-        if not os.path.exists(output_dir): os.makedirs(output_dir)
-        file_path = os.path.join(output_dir, f"backtest_{ticker}_{self.strategy.name}.csv")
-        df.to_csv(file_path, index=True, encoding='utf-8-sig')
-        if metrics:
-            with open(file_path, 'a', encoding='utf-8-sig') as f:
-                f.write("\n" + "="*50 + "\n   [통합 성과 보고서]\n" + "="*50 + "\n")
-                for k, v in metrics.items(): f.write(f"{k}: {v}\n")
+    def save_results(self, result_df, metrics, ticker):
+        """개별 종목 파일 저장"""
+        csv_path = os.path.join(self.base_path, f"backtest_{ticker}.csv")
+        result_df.to_csv(csv_path, encoding='utf-8-sig')
+        
+        txt_path = os.path.join(self.summary_path, f"summary_{ticker}.txt")
+        with open(txt_path, 'w', encoding='utf-8-sig') as f:
+            f.write(f"--- [ {ticker} / {self.strategy.name} 분석 ] ---\n")
+            for k, v in metrics.items(): f.write(f"{k}: {v}\n")
