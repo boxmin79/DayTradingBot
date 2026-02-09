@@ -36,6 +36,7 @@ class CpStockChart(DaishinAPI):
                 interval=1,
                 gap_adjustment="2",
                 adjust_price="1",
+                continue_query=False,
                 ):
         
         # 연결 여부 체크
@@ -55,29 +56,30 @@ class CpStockChart(DaishinAPI):
         # 호출 제한 대기
         self.wait_for_limit()  # 이미 __init__에서 limit_type=1로 설정했으므로 인자 없이 호출
         
-        self.obj_stock_chart.SetInputValue(0, code)  # 종목코드
-        self.obj_stock_chart.SetInputValue(1, ord(retrieve_type)) # "1"기간으로  "2"개수로 받기
-        if retrieve_type == "1":
-            if toDate is not None:
-                self.obj_stock_chart.SetInputValue(2, toDate)  # To 날짜
-            if fromDate is not None:
-                self.obj_stock_chart.SetInputValue(3, fromDate)  # From 날짜
-        if retrieve_type == "2":
-            self.obj_stock_chart.SetInputValue(4, retrieve_limit)  # 최근 500일치
-        
-        if chart_type in ['m', 's', 'T']:
-            self.obj_stock_chart.SetInputValue(5, [0, 1, 2, 3, 4, 5, 8]) ## 날짜,시간, 시가,고가,저가,종가,거래량
-        else:
-            self.obj_stock_chart.SetInputValue(5, [0, 2, 3, 4, 5, 8])  # 날짜,시가,고가,저가,종가,거래량
-        
-        self.obj_stock_chart.SetInputValue(6, ord(chart_type))  # '차트 주기
-        
-        if chart_type in ['m', 's', 'T']:
-            self.obj_stock_chart.SetInputValue(7, interval)  # 분간 차트 요청 시 분 간격
-        
-        self.obj_stock_chart.SetInputValue(8, ord(gap_adjustment))  # 갭보정
-        
-        self.obj_stock_chart.SetInputValue(9, ord(adjust_price))  # 수정주가 사용
+        if not continue_query:
+            self.obj_stock_chart.SetInputValue(0, code)  # 종목코드
+            self.obj_stock_chart.SetInputValue(1, ord(retrieve_type)) # "1"기간으로  "2"개수로 받기
+            if retrieve_type == "1":
+                if toDate is not None:
+                    self.obj_stock_chart.SetInputValue(2, toDate)  # To 날짜
+                if fromDate is not None:
+                    self.obj_stock_chart.SetInputValue(3, fromDate)  # From 날짜
+            if retrieve_type == "2":
+                self.obj_stock_chart.SetInputValue(4, retrieve_limit)  # 최근 500일치
+            
+            if chart_type in ['m', 's', 'T']:
+                self.obj_stock_chart.SetInputValue(5, [0, 1, 2, 3, 4, 5, 8]) ## 날짜,시간, 시가,고가,저가,종가,거래량
+            else:
+                self.obj_stock_chart.SetInputValue(5, [0, 2, 3, 4, 5, 8])  # 날짜,시가,고가,저가,종가,거래량
+            
+            self.obj_stock_chart.SetInputValue(6, ord(chart_type))  # '차트 주기
+            
+            if chart_type in ['m', 's', 'T']:
+                self.obj_stock_chart.SetInputValue(7, interval)  # 분간 차트 요청 시 분 간격
+            
+            self.obj_stock_chart.SetInputValue(8, ord(gap_adjustment))  # 갭보정
+            
+            self.obj_stock_chart.SetInputValue(9, ord(adjust_price))  # 수정주가 사용
         
         # 동기식 호출
         try:
@@ -88,7 +90,7 @@ class CpStockChart(DaishinAPI):
  
         rqStatus = self.obj_stock_chart.GetDibStatus()
         rqRet = self.obj_stock_chart.GetDibMsg1()
-        print("통신상태", rqStatus, rqRet)
+        # print("통신상태", rqStatus, rqRet)
         if rqStatus != 0:
             print(f"API 오류: {rqRet}")
             return False
@@ -163,7 +165,7 @@ class CpStockChart(DaishinAPI):
 
         df = pd.DataFrame(data)
 
-        print(f"조회 완료: {record_count}개 레코드")
+        # print(f"조회 완료: {record_count}개 레코드")
         return df
     
 # 여러가지 테스트 코드

@@ -31,6 +31,9 @@ def convert_pkl_to_csv(minute_dir):
         except Exception as e:
             print(f"!!! {pkl_file} 변환 중 에러: {e}")
             continue
+    
+    #진행 상황 표시
+    print(f"[완료] {len(pkl_files)}개의 PKL 파일이 CSV로 변환되었습니다.")
 
 if __name__ == "__main__":
     convert_pkl_to_csv(minute_dir)
