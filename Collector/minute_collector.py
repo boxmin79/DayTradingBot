@@ -12,7 +12,7 @@ class MinuteCollector:
         self.ticker_path = os.path.join(self.base_dir, "data", "ticker", "filtered_tickers.csv")
         os.makedirs(self.save_dir, exist_ok=True)
         
-    def collect_all_tickers(self, run_backtest=False):
+    def collect_all_tickers(self):
 
         if not os.path.exists(self.ticker_path):
             print(f"!!! [오류] 종목 리스트 파일이 없습니다: {self.ticker_path}")
@@ -22,6 +22,7 @@ class MinuteCollector:
         total = len(df_tickers)
         
         for idx, row in df_tickers.iterrows():
+            
             ticker_code = str(row['code']).zfill(6)
             ticker_name = row['name']
             
@@ -32,45 +33,69 @@ class MinuteCollector:
             try:
                 # 1. 데이터 업데이트 (최대 20만행)
                 df = self._update_single_ticker("A" + ticker_code, target_count=200000)
+                print(f"    [완료] {len(df):,} 행 저장됨")
                 
-                # 2. 백테스트 수행
-                if run_backtest and df is not None and not df.empty:
-                    print(f"    => 엔진 분석 중...", end='\r')
-                    _, metrics = self.backtester.run(df, ticker=ticker_code)
-                    
-                    if metrics:
-                        metrics['종목명'] = ticker_name
-                        metrics['종목코드'] = ticker_code
-                        # 분석 결과 엔진에 추가
-                        self.backtester.add_summary(metrics)
-                        
-                        # 10종목마다 통합 리포트 중간 저장
-                        if len(self.backtester.total_summary_list) % 10 == 0:
-                            self.backtester.save_total_report()
-                            
-                        print(f"    => 완료! 수익률: {metrics['총수익률']}, 매매: {metrics['매매횟수']}회")
             except Exception as e:
                 print(f"    !!! {ticker_name} 처리 중 에러: {e}")
-
-        # 모든 종목 완료 후 최종 리포트 저장
-        self.backtester.save_total_report()
 
     def _update_single_ticker(self, code, target_count=200000):
         """개별 종목 데이터를 수집하고 PKL로 저장"""
         file_path = os.path.join(self.save_dir, f"{code[1:]}.pkl")
         
-        # 기존 데이터 로드
+        # 1. 기존 데이터 로드
         if os.path.exists(file_path):
             existing_df = pd.read_pickle(file_path)
         else:
             existing_df = pd.DataFrame()
 
-        all_new = []
-        is_next = False
+        # 2. 최신 데이터 확인 및 실행 여부 결정 (추가된 핵심 로직)
+        if not existing_df.empty:
+            # 로컬 데이터의 마지막 날짜와 시간 추출
+            last_date = existing_df['date'].max()
+            last_time = existing_df[existing_df['date'] == last_date]['time'].max()
+            
+            # 서버의 가장 최신 데이터 1개만 요청하여 비교
+            try:
+                current_top = self.api.request(
+                    code=code,
+                    retrieve_type="2",      # "2" = 개수로 받기 (분 단위)
+                    retrieve_limit=1,       # 최신 1개만
+                    chart_type='m',         # 분 차트
+                    interval=1              # 1분 간격
+                )
+            except Exception:
+                current_top = None
+            
+            if current_top is not None and not current_top.empty:
+                curr_date = current_top['date'].iloc[0]
+                curr_time = current_top['time'].iloc[0]
+                
+                # 시점이 완전히 일치하면 수집 중단하고 바로 반환
+                if last_date == curr_date and last_time == curr_time:
+                    print(f"    [건너뜀] 이미 최신 상태입니다. ({last_date} {last_time})")
+                    return existing_df
+            
+            print(f"    [기존데이터] {len(existing_df):,} 행, 최신: {last_date} {last_time} -> 업데이트 시작")
+        else:
+            print(f"    [신규수집] 기존 데이터 없음 -> {target_count:,} 행 수집 시작")
+        
+        
+        all_new = [] # 수집된 새로운 데이터 저장 리스트
+        is_next = False # 다음 페이지 플래그
+        
+        # 새로운 데이터 수집 시작
+        print(f"    [수집시작] 목표: {target_count:,} 행 확보")
+        
         
         # 목표 수량 채울 때까지 반복 수집
         while (len(existing_df) + sum(len(x) for x in all_new)) < target_count:
-            df = self.api.get_stock_chart(code, 2247, 'm', 1, is_next=is_next)
+            df = self.api.request(
+                code=code,
+                retrieve_type="2",         # "2" = 개수로 받기
+                retrieve_limit=2247,       # 최대 2247개
+                chart_type='m',            # 분 차트
+                interval=1                 # 1분 간격
+            )
             
             if df is None or df.empty:
                 break
@@ -101,3 +126,4 @@ class MinuteCollector:
             return combined_df
         
         return existing_df
+        
