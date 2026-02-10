@@ -1,4 +1,5 @@
 from .strategy import Strategy
+from Indicators.factory import IndicatorFactory
 
 class VolatilityBreakout(Strategy):
     def __init__(self, k=0.5):
@@ -7,9 +8,17 @@ class VolatilityBreakout(Strategy):
         self.k = k
 
     def apply_strategy(self, df):
-        """백테스트 시 전체 데이터에 대해 목표가(target_price)를 일괄 계산"""
-        df['range'] = df['high'].shift(1) - df['low'].shift(1)
+        """
+        백테스트 시 전체 데이터에 대해 아래를 일괄 계산:
+        1. 변동성 돌파 목표가 (전일 데이터 기반)
+        2. 분석에 필요한 모든 분봉 기술적 지표
+        """
+        # 1. 목표가 계산 (전일 레인지 사용)
+        df['range'] = df['prev_high'] - df['prev_low']
         df['target_price'] = df['open'] + df['range'] * self.k
+
+        # 2. 분봉 데이터에 기술적 지표 추가
+        df = IndicatorFactory.add_all_indicators(df)
         return df
 
     def get_signal(self, row):

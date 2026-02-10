@@ -23,8 +23,12 @@ def main():
     for i, ticker in enumerate(tickers):
         try:
             # 분봉 및 일봉 데이터 로드
-            m_df = pd.read_csv(os.path.join(minute_data_path, f"{ticker}.csv"), index_col=0, parse_dates=True)
+            m_df = pd.read_csv(os.path.join(minute_data_path, f"{ticker}.csv"))
             d_df = pd.read_csv(os.path.join(daily_data_path, f"{ticker}.csv"))
+
+            # 일봉 데이터에 'date' 컬럼 추가 (datetime: YYYY-MM-DD -> date: YYYYMMDD)
+            if 'datetime' in d_df.columns and 'date' not in d_df.columns:
+                d_df['date'] = d_df['datetime'].astype(str).str.replace('-', '').astype(int)
 
             # 백테스트 실행 (상관관계 분석 파일이 여기서 생성됨)
             backtester.run(ticker, m_df, d_df)
