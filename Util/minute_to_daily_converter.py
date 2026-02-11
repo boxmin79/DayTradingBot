@@ -49,6 +49,9 @@ def convert_all_minute_to_daily():
                 'volume': 'sum'
             }).dropna() # 데이터가 없는 주말/공휴일 제거
 
+            # 인덱스 이름을 'date'로 변경 (CSV 저장 시 헤더가 됨)
+            daily_df.index.name = 'date'
+
             # 4. 결과 저장
             save_path = os.path.join(DAILY_DIR, file_name)
             daily_df.to_csv(save_path, encoding='utf-8-sig')

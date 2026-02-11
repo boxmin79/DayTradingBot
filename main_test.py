@@ -1,51 +1,148 @@
-import os
 import pandas as pd
 from Strategy.volatility_breakout import VolatilityBreakout
 from BackTest.volatility_backtest import VolatilityBacktest
+from multiprocessing import Pool, cpu_count
+import os
+import time
+import sys
+from datetime import timedelta
 
-def main():
-    # 1. 전략 및 백테스트 엔진 설정
-    # k값은 나중에 상관관계 분석을 통해 최적화할 대상입니다.
-    strategy = VolatilityBreakout(k=0.5) 
-    backtester = VolatilityBacktest(strategy)
+# [수정] 병렬 프로세스 작업 함수 (반환값 개선)
+def run_backtest_process(ticker):
+    try:
+        daily_file = f"data/chart/daily/{ticker}.csv"
+        minute_file = f"data/chart/minute/{ticker}.csv"
+        
+        if not os.path.exists(daily_file) or not os.path.exists(minute_file):
+            return None
 
-    # 2. 데이터 경로 설정
-    minute_data_path = "data/chart/minute"
-    daily_data_path = "data/chart/daily"
-
-    # 3. 분봉 폴더 내의 모든 종목 코드 가져오기 (.csv 제외)
-    file_list = [f for f in os.listdir(minute_data_path) if f.endswith('.csv')]
-    tickers = [f.replace('.csv', '') for f in file_list]
-
-    print(f"[*] 총 {len(tickers)}개 종목의 백테스트를 시작합니다.")
-
-    # 4. 종목별 루프 가동
-    for i, ticker in enumerate(tickers):
+        # 2. 데이터 로드
         try:
-            # 분봉 및 일봉 데이터 로드
-            m_df = pd.read_csv(os.path.join(minute_data_path, f"{ticker}.csv"))
-            d_df = pd.read_csv(os.path.join(daily_data_path, f"{ticker}.csv"))
+            daily_df = pd.read_csv(daily_file)
+            minute_df = pd.read_csv(minute_file)
+        except Exception:
+            return None
+        
+        # 3. [수정] 'date' 컬럼명 통일 (datetime -> date 변환 추가)
+        
+        # (1) 일봉 데이터 검증 및 변환
+        if 'date' not in daily_df.columns:
+            if 'datetime' in daily_df.columns:  # <--- [추가됨] 이 부분이 핵심!
+                daily_df = daily_df.rename(columns={'datetime': 'date'})
+            elif 'Date' in daily_df.columns:
+                daily_df = daily_df.rename(columns={'Date': 'date'})
+            elif '일자' in daily_df.columns:
+                daily_df = daily_df.rename(columns={'일자': 'date'})
+            elif daily_df.index.name == 'date':
+                daily_df = daily_df.reset_index()
+            else:
+                return None # 날짜 컬럼이 없으면 스킵
 
-            # 일봉 데이터에 'date' 컬럼 추가 (datetime: YYYY-MM-DD -> date: YYYYMMDD)
-            if 'datetime' in d_df.columns and 'date' not in d_df.columns:
-                d_df['date'] = d_df['datetime'].astype(str).str.replace('-', '').astype(int)
+        # [수정] 날짜 포맷 통일 (YYYY-MM-DD 문자열 -> YYYYMMDD 정수)
+        # 분봉 데이터(int64)와 병합하기 위해 일봉 데이터의 타입을 맞춤
+        if daily_df['date'].dtype == 'object':
+            daily_df['date'] = pd.to_datetime(daily_df['date']).dt.strftime('%Y%m%d').astype(int)
 
-            # 백테스트 실행 (상관관계 분석 파일이 여기서 생성됨)
-            backtester.run(ticker, m_df, d_df)
+        # (2) 분봉 데이터 검증 및 변환
+        if 'date' not in minute_df.columns:
+            if 'datetime' in minute_df.columns: # <--- [추가됨] 분봉도 동일하게 처리
+                minute_df = minute_df.rename(columns={'datetime': 'date'})
+            elif 'Date' in minute_df.columns:
+                minute_df = minute_df.rename(columns={'Date': 'date'})
+            elif '일자' in minute_df.columns:
+                minute_df = minute_df.rename(columns={'일자': 'date'})
+            elif minute_df.index.name == 'date':
+                minute_df = minute_df.reset_index()
+            else:
+                return None
+        
+        strategy = VolatilityBreakout(k=0.5)
+        backtester = VolatilityBacktest(strategy)
+        
+        is_traded = backtester.run(ticker, minute_df, daily_df)
+        
+        # [핵심] 거래가 발생했다면 요약 데이터(Dict)를 반환 (취합용)
+        if is_traded and backtester.total_summary_logs:
+            return backtester.total_summary_logs[-1]
             
-            if (i + 1) % 10 == 0:
-                print(f"[*] 현재 진행 상황: {i + 1}/{len(tickers)} 완료")
+        return None
+        
+    except Exception:
+        return None
 
-        except Exception as e:
-            print(f"[!] {ticker} 처리 중 오류 발생: {e}")
-            continue
+if __name__ == '__main__':
+    # 1. 대상 종목 리스트 로드
+    data_dir = "data/chart/daily"
+    # 파일명에서 확장자 제거하여 티커 리스트 생성
+    tickers = [f.replace('.csv', '') for f in os.listdir(data_dir) if f.endswith('.csv')]
+    
+    total_count = len(tickers)
+    print(f"\n[System] 총 {total_count}개 종목 백테스트 시작...")
+    print(f"[System] 사용 CPU 코어: {cpu_count()}개\n")
+    
+    start_time = time.time()
+    
+    # 결과 취합용 리스트
+    final_summaries = []
+    success_count = 0
 
-    # 5. 전 종목 완료 후 통합 요약 보고서(summary.csv) 저장
-    backtester.save_final_summary()
-    print("\n" + "="*50)
-    print("[*] 모든 백테스트 및 분석 데이터 생성이 완료되었습니다.")
-    print(f"[*] 결과 확인: data/backtest/result/")
-    print("="*50)
+    # 2. 멀티 프로세싱 (진행상황 시각화 추가)
+    with Pool(cpu_count()) as pool:
+        # imap_unordered: 작업이 끝나는 순서대로 즉시 결과를 내뱉음 (실시간 갱신용)
+        for i, result in enumerate(pool.imap_unordered(run_backtest_process, tickers), 1):
+            
+            # 거래가 발생한 경우 결과 저장
+            if result is not None:
+                final_summaries.append(result)
+                success_count += 1
+            
+            # --- [시각화 로직] ---
+            # 진행률 계산
+            progress = i / total_count
+            percent = progress * 100
+            
+            # 경과 시간 포맷팅 (00:00:12)
+            elapsed = time.time() - start_time
+            elapsed_str = str(timedelta(seconds=int(elapsed)))
+            
+            # 남은 시간 추정 (ETA)
+            if i > 10: # 초반엔 오차가 크므로 10개 이후부터 계산
+                avg_time = elapsed / i
+                remain_time = avg_time * (total_count - i)
+                eta_str = str(timedelta(seconds=int(remain_time)))
+            else:
+                eta_str = "계산중..."
 
-if __name__ == "__main__":
-    main()
+            # 진행 바 그리기 ( [#####-----] )
+            bar_length = 30
+            filled_length = int(bar_length * progress)
+            bar = '█' * filled_length + '-' * (bar_length - filled_length)
+            
+            # 한 줄에 덮어쓰기 출력 (\r)
+            sys.stdout.write(f"\r[{bar}] {percent:5.1f}% ({i}/{total_count}) | 경과: {elapsed_str} | 남은시간: {eta_str} | 거래발생: {success_count}건")
+            sys.stdout.flush()
+
+    # 3. 최종 결과 저장 (취합된 요약본)
+    print("\n\n[System] 백테스트 완료. 결과 집계 중...")
+    
+    if final_summaries:
+        summary_df = pd.DataFrame(final_summaries)
+        # 결과 저장 경로 (Strategy 이름 폴더)
+        strategy_name = VolatilityBreakout().__class__.__name__.lower()
+        save_path = f"data/backtest/result/{strategy_name}_summary.csv"
+        
+        summary_df.to_csv(save_path, index=False)
+        print(f"[Save] 통합 요약본 저장 완료: {save_path}")
+        
+        # 간단한 리포트 출력
+        avg_return = summary_df['total_return'].mean()
+        avg_win_rate = summary_df['win_rate'].mean()
+        print(f"\n📊 [최종 요약]")
+        print(f"- 평균 수익률: {avg_return:.2f}%")
+        print(f"- 평균 승률: {avg_win_rate:.2f}%")
+        print(f"- 거래된 종목: {success_count} / {total_count}개")
+        
+    else:
+        print("[Alert] 거래된 종목이 하나도 없습니다.")
+
+    print(f"\n총 소요 시간: {str(timedelta(seconds=int(time.time() - start_time)))}")
