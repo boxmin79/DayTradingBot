@@ -14,6 +14,7 @@ class IndicatorFactory:
         df = IndicatorFactory.add_momentum(df)
         df = IndicatorFactory.add_volatility(df)
         df = IndicatorFactory.add_volume(df)
+        df = IndicatorFactory.add_advanced(df)
         return df
 
     @staticmethod
@@ -96,7 +97,20 @@ class IndicatorFactory:
         # 1. MFI (Money Flow Index) - 거래량 포함 RSI
         typical_price = (df['high'] + df['low'] + df['close']) / 3
         money_flow = typical_price * df['volume']
-        # ... (상세 계산 로직 생략)
+        
+        # Positive/Negative Money Flow
+        delta = typical_price.diff()
+        pos_flow = pd.Series(0.0, index=df.index)
+        neg_flow = pd.Series(0.0, index=df.index)
+        
+        pos_flow[delta > 0] = money_flow[delta > 0]
+        neg_flow[delta < 0] = money_flow[delta < 0]
+        
+        pos_mf = pos_flow.rolling(window=14).sum()
+        neg_mf = neg_flow.rolling(window=14).sum()
+        
+        mfi_ratio = pos_mf / neg_mf
+        df['mfi'] = 100 - (100 / (1 + mfi_ratio))
 
         # 2. 캔들 몸통 비율 (Body Ratio)
         df['body_ratio'] = (df['close'] - df['open']).abs() / (df['high'] - df['low'])
@@ -126,7 +140,16 @@ class IndicatorFactory:
         # (분봉일 경우 당일 누적으로직으로 변경 필요)
         v = df['volume']
         tp = (df['high'] + df['low'] + df['close']) / 3  # Typical Price
-        df['vwap'] = (tp * v).rolling(window=20).sum() / v.rolling(window=20).sum()
+        
+        if 'time' in df.columns and 'date' in df.columns:
+            # 분봉 데이터(date, time 컬럼 존재)인 경우: 당일 누적 VWAP 계산
+            tp_v = tp * v
+            cum_tp_v = tp_v.groupby(df['date']).cumsum()
+            cum_v = v.groupby(df['date']).cumsum()
+            df['vwap'] = cum_tp_v / cum_v
+        else:
+            # 일봉 데이터 혹은 date 컬럼이 없는 경우: 20일 이동 VWAP
+            df['vwap'] = (tp * v).rolling(window=20).sum() / v.rolling(window=20).sum()
         
         # 4. 거래대금 (Trading Value)
         # 단위가 너무 커질 수 있어 보통 10억(1e9)이나 1백만(1e6)으로 나눕니다.
