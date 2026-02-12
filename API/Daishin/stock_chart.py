@@ -182,12 +182,20 @@ if __name__ == "__main__":
             
     # 분봉 개수 조회 테스트
     df = stock_chart.request(code="A005930", retrieve_type="2", retrieve_limit=100)
+    print("분봉 개수 조회 테스트")
     if df is not False:
         print(df)
     # 일봉 기간 조회 테스트
     df = stock_chart.request(code="A005930", retrieve_type="1", fromDate=20230101, toDate=20231231)
+    print("일봉 기간 조회 테스트")
+    
     if df is not False:
         print(df)
                                      
-                             
+    # 분봉 기간 조회 테스트
+    df = stock_chart.request(code="A005930", retrieve_type="1", fromDate=20230101, toDate=20231231, chart_type='m', interval=5)
+    print("분봉 기간 조회 테스트")
+    if df is not False:
+        print(df)
+        
     

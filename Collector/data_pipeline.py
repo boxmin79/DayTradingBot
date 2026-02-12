@@ -1,78 +1,89 @@
 import os
 import sys
 import pandas as pd
+import time
 from datetime import datetime
 
 # 프로젝트 루트 경로 추가
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 
+# 수집기 및 변환기 임포트 
 from Collector.update_minute_chart import MinuteChartUpdater
-from Collector.add_indicator import ChartIndicatorAdder
+from Collector.update_daily_chart import convert_to_daily
 
 class DataPipeline:
     def __init__(self):
-        self.updater = MinuteChartUpdater()
-        self.indicator_adder = ChartIndicatorAdder()
-        self.min_dir = os.path.join(BASE_DIR, "data", "chart", "minute")
-        self.daily_dir = os.path.join(BASE_DIR, "data", "chart", "daily")
-        
-        # 데이터 유지 설정 (2년치)
-        self.min_target_count = 200000 
-        self.daily_target_count = 500
+        self.ticker_path = os.path.join(BASE_DIR, "data", "ticker", "filtered_tickers.parquet")
+        self.daily_save_dir = os.path.join(BASE_DIR, "data", "chart", "daily")
+        self.min_updater = MinuteChartUpdater()
 
-    def process_ticker(self, ticker):
-        print(f"\n[*] {ticker} 데이터 파이프라인 시작...")
-
-        # 1. 업데이트된 부분만 분봉 df 생성 (무결성 검사 및 보충 포함)
-        # update_minute_chart.py의 로직을 사용하여 최신/보충된 전체 DF를 가져옵니다.
-        full_min_df = self.updater.get_updated_data(ticker)
-        if full_min_df is None or full_min_df.empty:
-            print(f"[!] {ticker}: 업데이트된 데이터를 가져오지 못했습니다.")
+    def run_pipeline(self, save=True):
+        """
+        데이터 수집 및 변환 파이프라인 실행
+        """
+        # 1. 티커 리스트 로드
+        if not os.path.exists(self.ticker_path):
+            print(f"[!] 오류: 티커 파일을 찾을 수 없습니다 -> {self.ticker_path}")
             return
 
-        # 2. 수집된 분봉을 일봉으로 변환후 일봉 df 생성
-        print(f"[*] {ticker}: 일봉 변환 중...")
-        full_daily_df = self._convert_to_daily(full_min_df)
-
-        # 3 & 4. 분봉과 일봉 df에 지표 추가
-        # (기존 차트에 지표가 없더라도 add_indicators_with_history factory를 통해 전체 계산)
-        print(f"[*] {ticker}: 기술적 지표 계산 중...")
-        full_min_df = self.indicator_adder.add_indicators_with_history(ticker, full_min_df)
-        full_daily_df = self.indicator_adder.add_indicators_with_history(ticker, full_daily_df)
-
-        # 6. 2년치가 넘는 데이터 삭제 (최신 데이터 기준 cut)
-        full_min_df = full_min_df.tail(self.min_target_count)
-        full_daily_df = full_daily_df.tail(self.daily_target_count)
-
-        # 5. 업데이트된(지표 추가/데이터 정리 완료) 차트를 CSV에 저장
-        min_path = os.path.join(self.min_dir, f"{ticker}.csv")
-        daily_path = os.path.join(self.daily_dir, f"{ticker}.csv")
-
-        full_min_df.to_csv(min_path, index=False, encoding='utf-8-sig')
-        full_daily_df.to_csv(daily_path, index=False, encoding='utf-8-sig')
-
-        print(f"[OK] {ticker}: 분봉({len(full_min_df)}행), 일봉({len(full_daily_df)}행) 저장 완료.")
-
-    def _convert_to_daily(self, m_df):
-        """분봉 -> 일봉 변환 로직"""
-        df = m_df.copy()
-        df['datetime'] = pd.to_datetime(df['date'].astype(str) + df['time'].astype(str).str.zfill(4), format='%Y%m%d%H%M')
-        df.set_index('datetime', inplace=True)
+        tickers_df = pd.read_parquet(self.ticker_path)
+        ticker_list = tickers_df['ticker'].tolist() if 'ticker' in tickers_df.columns else tickers_df['code'].tolist()
         
-        d_df = df.resample('1D').agg({
-            'open': 'first',
-            'high': 'max',
-            'low': 'min',
-            'close': 'last',
-            'volume': 'sum'
-        }).dropna()
-        
-        d_df['date'] = d_df.index.strftime('%Y%m%d').astype(int)
-        return d_df.reset_index(drop=True)
+        total = len(ticker_list)
+        success_count = 0
+        fail_count = 0
+        start_time = time.time()
 
-# --- 실행 테스트 코드 ---
+        print("=" * 60)
+        print(f"🚀 데이터 파이프라인 시작: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"📦 대상 종목 수: {total}개 | 저장 모드: {'활성화' if save else '비활성화'}")
+        print("=" * 60)
+
+        for i, ticker in enumerate(ticker_list, 1):
+            ticker_start = time.time()
+            percentage = (i / total) * 100
+            
+            # 진행 표시줄 및 현재 타겟 출력
+            print(f"[{i}/{total}] {percentage:>5.1f}% | 현재 종목: {ticker}", end="\r")
+
+            try:
+                # 2. 분봉 업데이트 (2년치 소급 및 누락 보충)
+                df_min = self.min_updater.get_updated_data(ticker, save=save)
+
+                if df_min is not None and not df_min.empty:
+                    # 3. 일봉 변환 및 저장
+                    convert_to_daily(
+                        df=df_min, 
+                        ticker=ticker, 
+                        save=save, 
+                        save_dir=self.daily_save_dir
+                    )
+                    success_count += 1
+                    status = "완료"
+                else:
+                    fail_count += 1
+                    status = "데이터 없음"
+
+            except Exception as e:
+                fail_count += 1
+                status = f"실패 ({e})"
+
+            # 개별 종목 처리 결과 로그 (줄바꿈하여 상세 표시)
+            elapsed = time.time() - ticker_start
+            print(f"[{i}/{total}] {percentage:>5.1f}% | {ticker:<8} | {status:<15} | 소요: {elapsed:.2f}초")
+
+        # 최종 요약 출력
+        total_elapsed = time.time() - start_time
+        avg_time = total_elapsed / total if total > 0 else 0
+
+        print("=" * 60)
+        print(f"🏁 파이프라인 종료: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"✅ 성공: {success_count} | ❌ 실패: {fail_count} | ⏱ 총 소요시간: {total_elapsed/60:.1f}분")
+        print(f"📊 평균 종목당 소요시간: {avg_time:.2f}초")
+        print("=" * 60)
+
 if __name__ == "__main__":
     pipeline = DataPipeline()
-    ticker_input = input("파이프라인을 실행할 종목코드를 입력하세요: ")
-    pipeline.process_ticker(ticker_input)
+    # 저장 여부를 인자로 결정
+    pipeline.run_pipeline(save=True)

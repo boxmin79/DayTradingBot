@@ -15,7 +15,7 @@ class MinuteCollector:
         
         # 데이터 저장 경로 (CSV 파일로 저장됨)
         self.save_dir = os.path.join(self.base_dir, "data", "chart", "minute")
-        self.ticker_path = os.path.join(self.base_dir, "data", "ticker", "filtered_tickers.csv")
+        self.ticker_path = os.path.join(self.base_dir, "data", "ticker", "filtered_tickers.parquet")
         os.makedirs(self.save_dir, exist_ok=True)
         
     def collect_all_tickers(self):
@@ -24,7 +24,7 @@ class MinuteCollector:
             print(f"!!! [오류] 종목 리스트 파일이 없습니다: {self.ticker_path}")
             return
 
-        df_tickers = pd.read_csv(self.ticker_path)
+        df_tickers = pd.read_parquet(self.ticker_path)
         total = len(df_tickers)
         
         for idx, row in df_tickers.iterrows():
@@ -46,11 +46,11 @@ class MinuteCollector:
 
     def verify_data(self, code):
         """수집된 데이터의 무결성(시간 연속성) 검사"""
-        file_path = os.path.join(self.save_dir, f"{code[1:]}.csv")
+        file_path = os.path.join(self.save_dir, f"{code[1:]}.parquet")
         if not os.path.exists(file_path):
             return
             
-        df = pd.read_csv(file_path)
+        df = pd.read_parquet(file_path)
         if df.empty: return
 
         # 날짜+시간 컬럼 생성 및 정렬
@@ -67,11 +67,11 @@ class MinuteCollector:
 
     def _update_single_ticker(self, code, target_count=200000):
         """개별 종목 데이터를 수집하고 CSV로 저장"""
-        file_path = os.path.join(self.save_dir, f"{code[1:]}.csv")
+        file_path = os.path.join(self.save_dir, f"{code[1:]}.parquet")
         
         # 1. 기존 데이터 로드
         if os.path.exists(file_path):
-            existing_df = pd.read_csv(file_path)
+            existing_df = pd.read_parquet(file_path)
         else:
             existing_df = pd.DataFrame()
 
@@ -156,7 +156,7 @@ class MinuteCollector:
                 combined_df = combined_df[combined_df['date'] >= cutoff_date]
             
             # 파일 저장 및 반환
-            combined_df.to_csv(file_path, index=False)
+            combined_df.to_parquet(file_path, index=False)
             return combined_df
         
         return existing_df

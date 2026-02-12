@@ -1,8 +1,9 @@
 import os
 import sys
 import pandas as pd
-from datetime import datetime, timedelta
-import holidays  # conda install holidays
+from datetime import datetime
+from pykrx import stock
+import time
 
 # 프로젝트 루트 경로 추가
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -15,87 +16,124 @@ class MinuteChartUpdater:
         self.api = CpStockChart()
         self.save_dir = os.path.join(BASE_DIR, "data", "chart", "minute")
         os.makedirs(self.save_dir, exist_ok=True)
-        # 한국 공휴일 정보 로드
-        self.kr_holidays = holidays.KR()
 
-    def check_connection(self):
-        """대신증권 API 연결 상태 확인"""
-        if not self.api.is_connected():
-            print("!!! [오류] 대신증권 API(Cybos Plus)가 연결되어 있지 않습니다.")
-            return False
-        return True
+    def get_market_days(self, start, end):
+        """실제 한국 거래소 영업일 리스트 추출"""
+        try:
+            df = stock.get_market_ohlcv(str(start), str(end), "005930")
+            return pd.to_datetime(df.index)
+        except Exception as e:
+            print(f"[!] 영업일 리스트 획득 실패: {e}")
+            return pd.DatetimeIndex([])
 
-    def get_updated_data(self, ticker):
-        """
-        7단계 로직 + 공백 날짜 출력 기능
-        """
-        if not self.check_connection():
+    def request_until_count(self, code, target_count):
+        """목표 개수를 채울 때까지 연속 쿼리를 수행하는 헬퍼 함수"""
+        all_dfs = []
+        current_count = 0
+        is_continue = False
+        
+        print(f"[*] {code}: 데이터 요청 시작 (목표: {target_count}개)...")
+        
+        while current_count < target_count:
+            # CpStockChart의 request 호출
+            df = self.api.request(
+                code=code, 
+                retrieve_type="2", 
+                retrieve_limit=target_count, 
+                chart_type='m',
+                continue_query=is_continue
+            )
+            
+            if df is None or (isinstance(df, bool) and df is False) or df.empty:
+                break
+                
+            all_dfs.append(df)
+            current_count += len(df)
+            print(f"    - 현재 수집량: {current_count}행 수신 중...", end="\r")
+            
+            # 더 이상 가져올 데이터가 없으면 중단
+            if not self.api.obj_stock_chart.Continue:
+                break
+            
+            is_continue = True
+            # API 호출 제한을 고려한 짧은 대기 (필요시)
+            time.sleep(0.05)
+            
+        if not all_dfs:
+            return None
+            
+        return pd.concat(all_dfs, ignore_index=True)
+
+    def get_updated_data(self, ticker, save=False):
+        code = "A" + ticker if not ticker.startswith('A') else ticker
+        file_path = os.path.join(self.save_dir, f"{code[1:]}.parquet")
+        
+        now = datetime.now()
+        today_int = int(now.strftime('%Y%m%d'))
+        limit_dt = now - pd.DateOffset(years=2)
+        limit_date_int = int(limit_dt.strftime('%Y%m%d'))
+
+        # 1. 기존 데이터 로드
+        if os.path.exists(file_path):
+            df = pd.read_parquet(file_path, engine='fastparquet')
+            print(f"[*] {ticker}: 기존 데이터 로드 ({len(df)}행).")
+            # 최신 데이터 업데이트 (개수 기반으로 빠르게 수집)
+            new_df = self.api.request(code, retrieve_type="2", retrieve_limit=3000, chart_type='m')
+            if isinstance(new_df, pd.DataFrame) and not new_df.empty:
+                df = pd.concat([df, new_df], ignore_index=True)
+        else:
+            # 파일이 없으면 2년치 전체 요청 (연속 쿼리 사용)
+            print(f"[*] {ticker}: 신규 종목입니다. 전체 데이터를 요청합니다.")
+            df = self.request_until_count(code, target_count=200000)
+
+        if df is None or df.empty:
+            print(f"[!] {ticker}: 데이터를 확보할 수 없습니다.")
             return None
 
-        # 1. ticker 입력 및 경로 설정
-        code = "A" + ticker if not ticker.startswith('A') else ticker
-        file_path = os.path.join(self.save_dir, f"{code[1:]}.csv")
-        
-        if not os.path.exists(file_path):
-            print(f"[*] {ticker}: 신규 파일입니다. 전체 데이터를 요청합니다.")
-            return self.api.request(code, retrieve_type="2", retrieve_limit=20000, chart_type='m')
-
-        # 2. 마지막 업데이트 날짜 확인
-        df = pd.read_csv(file_path)
-        if df.empty:
-            return self.api.request(code, retrieve_type="2", retrieve_limit=20000, chart_type='m')
-
-        # 3. 데이터 무결성(날짜 기준) 검사
+        # 2. 비어있는 날짜 체크 (수정된 핵심 로직)
+        df['date'] = df['date'].astype(int)
         df = df.drop_duplicates(subset=['date', 'time']).sort_values(['date', 'time'])
-        exist_dates = sorted(df['date'].unique())
         
-        start_dt = datetime.strptime(str(exist_dates[0]), '%Y%m%d')
-        end_dt = datetime.strptime(str(exist_dates[-1]), '%Y%m%d')
-        
-        # 실제 개장일 리스트 생성 (주말/공휴일 제외)
-        all_days = pd.date_range(start=start_dt, end=end_dt)
-        valid_biz_days = [
-            int(d.strftime('%Y%m%d')) for d in all_days 
-            if d.weekday() < 5 and d not in self.kr_holidays
-        ]
+        # [수정] 체크 시작점을 데이터의 최소 날짜가 아닌 '2년 전(limit_date_int)'으로 설정
+        # 이렇게 해야 '1주일 전 ~ 2년 전' 사이의 공백을 찾아냅니다.
+        existing_dates = pd.to_datetime(df['date'].unique().astype(str), format='%Y%m%d')
+        market_days = self.get_market_days(str(limit_date_int), str(today_int))
+        missing_days = market_days.difference(existing_dates)
 
-        # 5. 비어있는 날짜 추출 및 출력
-        missing_dates = [d for d in valid_biz_days if d not in exist_dates]
-        
-        if missing_dates:
-            print(f"\n[!] {ticker}: 데이터 공백이 발견되었습니다.")
-            print(f"    - 비어있는 날짜 ({len(missing_dates)}일): {missing_dates}")
-            print(f"    - 보충 요청을 시작합니다...")
+        # 3. 누락된 날짜 보충 (날짜 기반 정밀 요청)
+        if not missing_days.empty:
+            print(f"[*] {ticker}: {len(missing_days)}일의 누락 데이터(과거+중간)를 발견했습니다.")
+            print(f"    - 범위: {missing_days.min().date()} ~ {missing_days.max().date()}")
             
-            for m_date in missing_dates:
-                if not self.check_connection(): break
-                gap_df = self.api.request(code, retrieve_type="1", fromDate=m_date, toDate=m_date, chart_type='m')
-                if isinstance(gap_df, pd.DataFrame) and not gap_df.empty:
-                    df = pd.concat([df, gap_df])
-        else:
-            print(f"[*] {ticker}: 과거 데이터 내 날짜 공백이 없습니다.")
+            new_chunks = []
+            # 너무 많은 날짜를 요청하면 시간이 걸리므로 진행 상황 표시
+            for i, m_day in enumerate(missing_days):
+                t_date = int(m_day.strftime('%Y%m%d'))
+                # 개별 날짜 요청
+                chunk = self.api.request(code, retrieve_type="1", fromDate=t_date, toDate=t_date, chart_type='m')
+                
+                if isinstance(chunk, pd.DataFrame) and not chunk.empty:
+                    new_chunks.append(chunk)
+                
+                # 로그 출력 (10일 단위)
+                if (i + 1) % 10 == 0:
+                    print(f"    - 진행률: {i + 1}/{len(missing_days)}일 완료...")
 
-        # 6. 최신 상태 확인 및 업데이트
-        last_date = int(exist_dates[-1])
-        today_date = int(datetime.now().strftime('%Y%m%d'))
+            if new_chunks:
+                df = pd.concat([df] + new_chunks, ignore_index=True)
+
+        # 4. 최종 정제 및 저장 (2년치 엄격 유지)
+        df = df.drop_duplicates(subset=['date', 'time']).sort_values(['date', 'time'])
+        df = df[df['date'] >= limit_date_int].reset_index(drop=True)
+
+        if save:
+            df.to_parquet(file_path, engine='fastparquet', compression='snappy', index=False)
+            print(f"[✔] {ticker}: 최종 {len(df)}행 업데이트 완료 (2년치 확보)")
         
-        if last_date < today_date:
-            print(f"[*] {ticker}: 최신 데이터({last_date} 이후)를 요청합니다.")
-            new_df = self.api.request(code, retrieve_type="1", fromDate=last_date, toDate=today_date, chart_type='m')
-            if isinstance(new_df, pd.DataFrame):
-                df = pd.concat([df, new_df])
-        else:
-            print(f"[*] {ticker}: 이미 최신 날짜입니다.")
+        return df
 
-        return df.drop_duplicates(subset=['date', 'time']).sort_values(['date', 'time'])
-
-# --- 테스트 코드 ---
 if __name__ == "__main__":
     updater = MinuteChartUpdater()
-    ticker_input = input("업데이트할 종목코드(6자리): ")
-    result = updater.get_updated_data(ticker_input)
-    
-    if result is not None:
-        print(f"\n--- {ticker_input} 최종 데이터 요약 ---")
-        print(f"전체 행 수: {len(result):,} | 마지막 날짜: {result['date'].max()}")
-        print(result.tail(10))
+    # 테스트 종목
+    df = updater.get_updated_data("005930", save=True)
+    print(df)

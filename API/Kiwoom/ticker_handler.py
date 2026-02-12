@@ -1,15 +1,22 @@
 import os
+import sys
 import pandas as pd
 from datetime import datetime
+from PyQt5.QtWidgets import QApplication
+
+# 프로젝트 루트 경로 추가 (API 패키지 인식을 위해)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 from API.Kiwoom.api import KiwoomAPI
 
 class TickerHandler(KiwoomAPI):
     def __init__(self):
         super().__init__()
         # 경로 설정: 날짜를 제거한 고정 파일명 사용
-        self.save_dir = os.path.abspath(os.path.join(os.getcwd(), "data", "ticker"))
-        self.raw_path = os.path.join(self.save_dir, "tickers.csv")
-        self.filtered_path = os.path.join(self.save_dir, "filtered_tickers.csv")
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.save_dir = os.path.join(base_dir, "data", "ticker")
+        self.raw_path = os.path.join(self.save_dir, "tickers.parquet")
+        self.filtered_path = os.path.join(self.save_dir, "filtered_tickers.parquet")
         self.log_path = os.path.join(self.save_dir, "last_update.txt") # 업데이트 날짜 저장용 txt
 
     def should_update(self):
@@ -95,8 +102,8 @@ class TickerHandler(KiwoomAPI):
 
         # 파일 저장 (고정 파일명)
         try:
-            pd.DataFrame(raw_list).to_csv(self.raw_path, index=False, encoding='utf-8-sig')
-            pd.DataFrame(filtered_list).to_csv(self.filtered_path, index=False, encoding='utf-8-sig')
+            pd.DataFrame(raw_list).to_parquet(self.raw_path, index=False)
+            pd.DataFrame(filtered_list).to_parquet(self.filtered_path, index=False)
             
             # 마지막 업데이트 날짜 기록
             with open(self.log_path, "w", encoding="utf-8") as f:
@@ -106,3 +113,9 @@ class TickerHandler(KiwoomAPI):
             
         except Exception as e:
             print(f"!!! [저장 실패] {e}")
+            
+#테스트 코드
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    handler = TickerHandler()
+    handler.collect_and_save()

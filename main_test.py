@@ -10,16 +10,16 @@ from datetime import timedelta
 # [수정] 병렬 프로세스 작업 함수 (반환값 개선)
 def run_backtest_process(ticker):
     try:
-        daily_file = f"data/chart/daily/{ticker}.csv"
-        minute_file = f"data/chart/minute/{ticker}.csv"
+        daily_file = f"data/chart/daily/{ticker}.parquet"
+        minute_file = f"data/chart/minute/{ticker}.parquet"
         
         if not os.path.exists(daily_file) or not os.path.exists(minute_file):
             return None
 
         # 2. 데이터 로드
         try:
-            daily_df = pd.read_csv(daily_file)
-            minute_df = pd.read_csv(minute_file)
+            daily_df = pd.read_parquet(daily_file)
+            minute_df = pd.read_parquet(minute_file)
         except Exception:
             return None
         
@@ -74,7 +74,7 @@ if __name__ == '__main__':
     # 1. 대상 종목 리스트 로드
     data_dir = "data/chart/daily"
     # 파일명에서 확장자 제거하여 티커 리스트 생성
-    tickers = [f.replace('.csv', '') for f in os.listdir(data_dir) if f.endswith('.csv')]
+    tickers = [f.replace('.parquet', '') for f in os.listdir(data_dir) if f.endswith('.parquet')]
     
     total_count = len(tickers)
     print(f"\n[System] 총 {total_count}개 종목 백테스트 시작...")
