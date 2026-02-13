@@ -49,7 +49,6 @@ class TickerHandler(KiwoomAPI):
             print("!!! [중단] 서버 연결이 없습니다.")
             return
 
-        # 업데이트가 필요한 경우에만 진행
         if not self.should_update():
             return
 
@@ -57,13 +56,11 @@ class TickerHandler(KiwoomAPI):
             os.makedirs(self.save_dir)
 
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        print(f"--- [데이터 수집] 종목 리스트 수집 시작 ({current_time}) ---")
+        print(f"--- [데이터 수집] 종목 리스트 및 상장일 수집 시작 ({current_time}) ---")
         
-        # 시장별 종목 리스트 확보
         kospi = self.ocx.dynamicCall("GetCodeListByMarket(QString)", "0").split(';')[:-1]
         kosdaq = self.ocx.dynamicCall("GetCodeListByMarket(QString)", "10").split(';')[:-1]
         
-        # 제외 종목(ETF/ETN) 확보
         exclude_set = set(self.ocx.dynamicCall("GetCodeListByMarket(QString)", "8").split(';')[:-1] + 
                           self.ocx.dynamicCall("GetCodeListByMarket(QString)", "5").split(';')[:-1])
         
@@ -79,7 +76,10 @@ class TickerHandler(KiwoomAPI):
                 price = int(self.ocx.dynamicCall("GetMasterLastPrice(QString)", code) or 0)
                 stock_cnt = int(self.ocx.dynamicCall("GetMasterListedStockCnt(QString)", code) or 0)
                 market_cap = price * stock_cnt
-
+                
+                # --- [추가된 로직] 상장일 수집 ---
+                # GetMasterListedStockDate "YYYY/MM/DD" 또는 "YYYYMMDD" 형태의 문자열을 반환합니다.
+                listing_date = str(self.ocx.dynamicCall("GetMasterListedStockDate(QString)", code)).strip()
                 row = {
                     'code': code,
                     'name': name,
@@ -87,29 +87,27 @@ class TickerHandler(KiwoomAPI):
                     'market_cap': market_cap,
                     'prev_price': price,
                     'state': state,
-                    'construction': construction
+                    'construction': construction,
+                    'listing_date': listing_date  # 결과 딕셔너리에 추가
                 }
                 raw_list.append(row)
 
-                # 필터링 조건 적용
                 if code in exclude_set: continue
-                if not code.endswith('0'): continue # 우선주 제외
-                if price < 1000 or market_cap < 50000000000: continue # 동전주/소형주 제외
+                if not code.endswith('0'): continue
+                if price < 1000 or market_cap < 50000000000: continue
                 if any(kw in state or kw in construction for kw in ["관리", "정리", "거래정지"]):
                     continue
 
                 filtered_list.append(row)
 
-        # 파일 저장 (고정 파일명)
         try:
             pd.DataFrame(raw_list).to_parquet(self.raw_path, index=False)
             pd.DataFrame(filtered_list).to_parquet(self.filtered_path, index=False)
             
-            # 마지막 업데이트 날짜 기록
             with open(self.log_path, "w", encoding="utf-8") as f:
                 f.write(current_time)
             
-            print(f"--- [완료] 원본: {len(raw_list)}건 / 필터: {len(filtered_list)}건 저장되었습니다. ---")
+            print(f"--- [완료] 상장일 포함 데이터 저장: 원본 {len(raw_list)}건 / 필터 {len(filtered_list)}건 ---")
             
         except Exception as e:
             print(f"!!! [저장 실패] {e}")

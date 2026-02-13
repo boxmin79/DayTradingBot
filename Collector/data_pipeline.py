@@ -28,9 +28,12 @@ class DataPipeline:
             return
 
         tickers_df = pd.read_parquet(self.ticker_path)
-        ticker_list = tickers_df['ticker'].tolist() if 'ticker' in tickers_df.columns else tickers_df['code'].tolist()
         
-        total = len(ticker_list)
+        # [수정] 티커와 상장일을 함께 순회하기 위해 DataFrame 자체를 활용
+        # 컬럼명 호환성 체크 (ticker vs code)
+        code_col = 'ticker' if 'ticker' in tickers_df.columns else 'code'
+        
+        total = len(tickers_df)
         success_count = 0
         fail_count = 0
         start_time = time.time()
@@ -40,16 +43,20 @@ class DataPipeline:
         print(f"📦 대상 종목 수: {total}개 | 저장 모드: {'활성화' if save else '비활성화'}")
         print("=" * 60)
 
-        for i, ticker in enumerate(ticker_list, 1):
-            ticker_start = time.time()
-            percentage = (i / total) * 100
+        # iterrows()를 사용하여 각 행의 정보(상장일 등) 접근
+        for i, row in tickers_df.iterrows():
+            ticker = row[code_col]
+            # [추가] 상장일 추출 (없으면 None)
+            listing_date = row.get('listing_date', None)
             
-            # 진행 표시줄 및 현재 타겟 출력
-            print(f"[{i}/{total}] {percentage:>5.1f}% | 현재 종목: {ticker}", end="\r")
+            ticker_start = time.time()
+            percentage = ((i + 1) / total) * 100
+            
+            print(f"[{i+1}/{total}] {percentage:>5.1f}% | 현재 종목: {ticker}", end="\r")
 
             try:
-                # 2. 분봉 업데이트 (2년치 소급 및 누락 보충)
-                df_min = self.min_updater.get_updated_data(ticker, save=save)
+                # 2. 분봉 업데이트 (상장일 인자 전달 추가)
+                df_min = self.min_updater.get_updated_data(ticker, listing_date=listing_date, save=save)
 
                 if df_min is not None and not df_min.empty:
                     # 3. 일봉 변환 및 저장
@@ -69,9 +76,9 @@ class DataPipeline:
                 fail_count += 1
                 status = f"실패 ({e})"
 
-            # 개별 종목 처리 결과 로그 (줄바꿈하여 상세 표시)
             elapsed = time.time() - ticker_start
-            print(f"[{i}/{total}] {percentage:>5.1f}% | {ticker:<8} | {status:<15} | 소요: {elapsed:.2f}초")
+            # 줄바꿈 처리를 명확하게 하여 로그 가독성 확보
+            print(f"[{i+1}/{total}] {percentage:>5.1f}% | {ticker:<8} | {status:<15} | 소요: {elapsed:.2f}초")
 
         # 최종 요약 출력
         total_elapsed = time.time() - start_time
@@ -85,5 +92,4 @@ class DataPipeline:
 
 if __name__ == "__main__":
     pipeline = DataPipeline()
-    # 저장 여부를 인자로 결정
     pipeline.run_pipeline(save=True)

@@ -1,163 +1,203 @@
-import pandas as pd
-import numpy as np
 import os
+import sys
+
+# 1. 프로젝트 루트 경로 자동 등록
+# 현재 파일(BackTest/volatility_backtest.py)의 부모 디렉토리를 찾아 BASE_DIR로 설정합니다.
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(CURRENT_DIR)
+
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+# 2. 필수 모듈 임포트
+import pandas as pd
+from Collector.add_indicator import ChartIndicatorAdder # Collector 패키지 내 클래스
 
 class VolatilityBacktest:
     def __init__(self, strategy, base_dir="data/backtest/result"):
         self.strategy = strategy
-        self.strategy_name = self.strategy.__class__.__name__.lower()
+        self.strategy_name = self.strategy.name
         self.base_dir = base_dir
         self.output_dir = os.path.join(base_dir, self.strategy_name)
-        
-        self.total_summary_logs = []  # summary.csv용
-        self.recent_results = []      # 심리 지표용 (최근 10회 승률)
+        self.total_summary_logs = []
+        self.indicator_adder = ChartIndicatorAdder()
         
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir, exist_ok=True)
 
-    def run(self, ticker, minute_df, daily_df):
+    def run(self, ticker, minute_df, daily_df, save=False):
+        """
+        개별 종목에 대한 백테스트 실행 및 결과 저장 여부 결정
+        """
         try:
-            # 1. 일봉 지표 확장 및 결합 (Context)
-            df = self._prepare_data(minute_df, daily_df)
+            # 1. 지표 추가 (작성하신 ChartIndicatorAdder 활용)
+            # 분봉과 일봉 데이터에 모든 기술적 지표를 컬럼으로 추가합니다.
+            minute_df = self.indicator_adder.add_indicators(minute_df)
+            daily_df = self.indicator_adder.add_indicators(daily_df)
+            
+            # 데이터가 부족하여 지표 계산에 실패한 경우 중단합니다.
+            if minute_df.empty or daily_df.empty:
+                return False
 
-            # 2. 전략 적용 (목표가 계산 및 분봉 지표 생성)
-            # Strategy 클래스 내부에서 ma5, ma20, bb_upper 등의 분봉 지표가 생성되어야 함
-            df = self.strategy.apply_strategy(df)
+            # 2. 일봉에서 당일 적용할 목표가(target_price) 계산
+            # 전일(shift 1) 데이터를 활용해 오늘 아침 확정된 목표가를 산출합니다.
+            daily_df['range'] = daily_df['high'].shift(1) - daily_df['low'].shift(1)
+            daily_df['target_price'] = daily_df['open'] + (daily_df['range'] * self.strategy.k)
+            
+            valid_daily = daily_df.dropna(subset=['target_price'])
 
-            # 3. 매매 시뮬레이션 및 초정밀 스냅샷 채득
-            ticker_trade_logs = self._simulate(ticker, df)
+            # 3. 고속 시뮬레이션 실행 (지표가 포함된 데이터 사용)
+            ticker_trade_logs = self._simulate_efficient(ticker, minute_df, valid_daily)
 
-            # 4. 결과 저장
+            # 4. 결과 요약 및 저장
             if ticker_trade_logs:
-                analysis_df = pd.DataFrame(ticker_trade_logs)
-                analysis_df.to_csv(os.path.join(self.output_dir, f"{ticker}_analysis.csv"), index=False)
-                self._add_to_summary(ticker, analysis_df)
+                self._add_to_summary(ticker, ticker_trade_logs)
+                
+                # [수정된 부분] save=True일 경우 상세 내역을 Parquet으로 저장
+                if save:
+                    res_df = pd.DataFrame(ticker_trade_logs)
+                    # 파일 확장자를 .parquet으로 변경합니다.
+                    save_path = os.path.join(self.output_dir, f"{ticker}.parquet")
+                    
+                    # fastparquet 또는 pyarrow 엔진을 사용하여 저장합니다.
+                    res_df.to_parquet(save_path, engine='fastparquet', compression='snappy', index=False)
+                    # print(f"[*] {ticker}: 상세 매매 내역 저장 완료 ({save_path})") # 디버깅용
+                    
                 return True
+                
         except Exception as e:
-            print(f"[{ticker}] 백테스트 중 오류 발생: {e}")
+            print(f"[{ticker}] 백테스트 중 에러 발생: {e}")
         return False
 
-    def _prepare_data(self, minute_df, daily_df):
-        """일봉의 거시적 데이터(추세, 수급)를 분봉에 결합"""
-        d = daily_df.copy()
+    def _simulate_efficient(self, ticker, min_df, day_df):
+        logs = []
+        # 일봉의 모든 지표를 날짜별로 매핑 (딕셔너리화)
+        day_dict = day_df.set_index('date').to_dict('index')
         
-        # 기본 가격 데이터 (전일 기준)
-        d['prev_high'] = d['high'].shift(1)
-        d['prev_low'] = d['low'].shift(1)
-        d['prev_close'] = d['close'].shift(1)
-        d['prev_vol'] = d['volume'].shift(1)
-        
-        # 일봉 이동평균선 (추세 필터용)
-        d['d_ma5'] = d['close'].rolling(5).mean()
-        d['d_ma20'] = d['close'].rolling(20).mean()
-        d['d_ma60'] = d['close'].rolling(60).mean()
-        d['d_ma120'] = d['close'].rolling(120).mean()
-        
-        # 일봉 변동성 및 거래량 이동평균
-        d['d_atr'] = (d['high'] - d['low']).rolling(14).mean()
-        d['d_vol_ma20'] = d['volume'].rolling(20).mean().shift(1) 
-        
-        # 분봉 데이터와 병합할 컬럼 선별
-        cols = ['date', 'prev_high', 'prev_low', 'prev_close', 'prev_vol', 
-                'd_ma5', 'd_ma20', 'd_ma60', 'd_ma120', 'd_atr', 'd_vol_ma20']
-        combined = pd.merge(minute_df, d[cols], on='date', how='left')
-        return combined
+        # 비용 설정 (수수료+세금+슬리피지 합계 약 0.3%)
+        total_cost_ratio = 0.003 
+        stop_loss_rate = getattr(self.strategy, 'stop_loss_rate', 0.02)
 
-    def _simulate(self, ticker, df):
-        """거래 발생 시점의 분봉(미시) + 일봉(거시) 지표를 모두 기록"""
-        ticker_logs = []
-        grouped = df.groupby('date')
+        target_dict = {d: v['target_price'] for d, v in day_dict.items()}
+        close_dict = {d: v['close'] for d, v in day_dict.items()}
+
+        min_df['target_price'] = min_df['date'].map(target_dict)
+        active_df = min_df.dropna(subset=['target_price']).copy()
         
-        for date, day_df in grouped:
-            if day_df.empty: continue
-            
-            # 기준 데이터 추출
-            target_price = day_df['target_price'].iloc[0]
-            day_open = day_df['open'].iloc[0]
-            prev_close = day_df['prev_close'].iloc[0]
-            
-            # [일봉] 시가 대비 목표가 거리 (너무 멀면 진입 자제)
-            open_to_target = (target_price / day_open) - 1 if day_open else 0
+        # 목표가 돌파 시점 확인
+        active_df['is_breakout'] = active_df['high'] >= active_df['target_price']
+        breakout_days = active_df[active_df['is_breakout']].groupby('date')
 
-            # 돌파 감지 (고가가 목표가 이상)
-            breakout = day_df[day_df['high'] >= target_price]
-            
-            if not breakout.empty:
-                entry_row = breakout.iloc[0] # 돌파가 일어난 첫 분봉
-                entry_price = target_price 
-                exit_price = day_df['close'].iloc[-1] # 종가 청산
-                profit_ratio = (exit_price / entry_price) - 1
+        for date, entries in breakout_days:
+            entry_row = entries.iloc[0] # 첫 돌파 분봉
+            buy_price = entry_row['target_price']
+            stop_price = buy_price * (1 - stop_loss_rate)
+            sell_price = close_dict.get(date)
+            is_stop_loss = False
 
-                # [성과] 당일 최대 상승폭 (익절 포텐셜)
-                day_high = day_df['high'].max()
-                max_potential = (day_high / entry_price) - 1
+            # 당일 최저가 기반 손절 여부 판단
+            day_min_full = min_df[min_df['date'] == date]
+            if day_min_full['low'].min() <= stop_price:
+                sell_price = stop_price
+                is_stop_loss = True
 
-                # [심리] 최근 10회 승률
-                recent_wr = sum(1 for r in self.recent_results[-10:] if r > 0) / 10 if self.recent_results else 0
+            if sell_price:
+                # 정밀 수익률 계산 (비용 차감)
+                profit_rate = (sell_price / buy_price) - 1 - total_cost_ratio
                 
-                # --- 스냅샷 작성 (분석의 핵심) ---
-                snapshot = {
-                    'ticker': ticker,
-                    'date': date,
-                    'entry_time': entry_row['time'], # 시간 (index가 시간인 경우) 혹은 entry_row['time']
-                    'day_of_week': pd.to_datetime(str(date)).dayofweek, # 0:월 ~ 4:금
-                    
-                    'profit': profit_ratio,
-                    'max_potential': max_potential,
-                    
-                    # 1. 분봉 기술적 지표 (Trigger Detail) - 여기가 대폭 보강됨
-                    'm_rsi': entry_row.get('rsi', np.nan),
-                    'm_vol_ratio': entry_row.get('volume_ratio', np.nan),
-                    'm_macd_hist': entry_row.get('macd_hist', np.nan),
-                    
-                    # 분봉 이평선 이격도 (단기 과열 판단)
-                    'm_ma5_dist': entry_row['close'] / entry_row['ma5'] if 'ma5' in entry_row and pd.notna(entry_row['ma5']) and entry_row['ma5'] != 0 else 1,
-                    'm_ma20_dist': entry_row['close'] / entry_row['ma20'] if 'ma20' in entry_row and pd.notna(entry_row['ma20']) and entry_row['ma20'] != 0 else 1,
-                    
-                    # 분봉 볼린저밴드 위치 (상단 돌파 강도)
-                    'm_bb_upper_dist': entry_row['close'] / entry_row['bb_upper'] if 'bb_upper' in entry_row and pd.notna(entry_row['bb_upper']) and entry_row['bb_upper'] != 0 else 1,
-                    
-                    # 분봉 캔들 모양 (꼬리, 몸통)
-                    'm_candle_body': (entry_row['close'] - entry_row['open']) / entry_row['open'] if pd.notna(entry_row['open']) and entry_row['open'] != 0 else 0,
-                    'm_high_tail': (entry_row['high'] - entry_row['close']) / entry_row['close'] if pd.notna(entry_row['close']) and entry_row['close'] != 0 else 0,
-                    
-                    # 2. 일봉 추세 지표 (Context Filter)
-                    'd_gap_ratio': (day_open - prev_close) / prev_close if pd.notna(prev_close) and prev_close != 0 else 0,
-                    'd_open_to_target': open_to_target,
-                    'd_ma5_dist': entry_row['close'] / entry_row['d_ma5'] if pd.notna(entry_row['d_ma5']) and entry_row['d_ma5'] != 0 else 1,
-                    'd_ma60_dist': entry_row['close'] / entry_row['d_ma60'] if pd.notna(entry_row['d_ma60']) and entry_row['d_ma60'] != 0 else 1,
-                    'd_trend_short': 1 if pd.notna(entry_row['d_ma5']) and pd.notna(entry_row['d_ma20']) and entry_row['d_ma5'] > entry_row['d_ma20'] else 0,
-                    'd_trend_long': 1 if pd.notna(entry_row['d_ma20']) and pd.notna(entry_row['d_ma120']) and entry_row['d_ma20'] > entry_row['d_ma120'] else 0,
-                    
-                    # 3. 수급 에너지
-                    'd_vol_status': day_df['volume'].cumsum().loc[entry_row.name] / entry_row['prev_vol'] if pd.notna(entry_row['prev_vol']) and entry_row['prev_vol'] != 0 else 0,
-                    'd_avg_vol_ratio': day_df['volume'].cumsum().loc[entry_row.name] / entry_row['d_vol_ma20'] if pd.notna(entry_row['d_vol_ma20']) and entry_row['d_vol_ma20'] != 0 else 0,
-                    
-                    'recent_wr': recent_wr
+                # [데이터 결합 시작]
+                # 1. 기본 매매 정보
+                trade_data = {
+                    'ticker': ticker, 
+                    'date': date, 
+                    'profit': profit_rate,
+                    'buy_price': buy_price, 
+                    'sell_price': sell_price,
+                    'is_stop_loss': is_stop_loss, 
+                    'entry_time': entry_row['time']
                 }
                 
-                ticker_logs.append(snapshot)
-                self.recent_results.append(profit_ratio)
+                # 2. 분봉 지표 추가 (m_ 접두어 부여하여 모든 컬럼 강제 병합)
+                min_row_dict = entry_row.to_dict()
+                for k, v in min_row_dict.items():
+                    if k not in ['ticker', 'date', 'time', 'target_price']:
+                        trade_data[f"m_{k}"] = v
                 
-        return ticker_logs
+                # 3. 일봉 지표 추가 (d_ 접두어 부여)
+                current_day_indicators = day_dict.get(date, {})
+                for k, v in current_day_indicators.items():
+                    # 중복 방지를 위해 target_price, close 등은 제외
+                    if k not in ['target_price', 'close', 'open', 'high', 'low', 'volume']:
+                        trade_data[f"d_{k}"] = v
+                
+                logs.append(trade_data)
+                
+        return logs
 
-    def _add_to_summary(self, ticker, df):
-        p = df['profit']
-        equity = (1 + p).cumprod()
+    def _add_to_summary(self, ticker, trade_logs):
+        df = pd.DataFrame(trade_logs)
+        profits = df['profit']
         
-        summary = {
+        # 요약 통계 계산 및 리스트 추가
+        self.total_summary_logs.append({
             'ticker': ticker,
-            'total_return': (equity.iloc[-1] - 1) * 100,
-            'win_rate': (p > 0).mean() * 100,
-            'profit_factor': p[p > 0].sum() / abs(p[p < 0].sum()) if any(p < 0) else 99,
-            'mdd': ((equity.cummax() - equity) / equity.cummax()).max() * 100,
-            'trade_count': len(df)
-        }
-        self.total_summary_logs.append(summary)
+            'total_return': ((1 + profits).prod() - 1) * 100,
+            'win_rate': (profits > 0).mean() * 100,
+            'trade_count': len(df),
+            'avg_profit': profits.mean() * 100
+        })
+        
+# 삼성전자로 테스트
+# ... (기존 클래스 코드 하단에 추가) ...
 
-    def save_final_summary(self):
-        if self.total_summary_logs:
-            pd.DataFrame(self.total_summary_logs).to_csv(
-                os.path.join(self.base_dir, f"{self.strategy_name}_summary.csv"), index=False
-            )
-            print(f"\n[!] 1,900개 종목 분석 통합 보고서 저장 완료.")
+if __name__ == "__main__":
+    from Strategy.volatility_breakout import VolatilityBreakout
+    
+    # 1. 테스트용 종목 설정 (삼성전자)
+    ticker = "005930" # [cite: 1, 28, 213]
+    
+    # 2. 데이터 경로 설정 (프로젝트 루트 기준)
+    # BASE_DIR 설정이 상단에 완료되어 있어야 합니다.
+    minute_path = os.path.join(BASE_DIR, "data", "chart", "minute", f"{ticker}.parquet") #  [cite: 6, 187]
+    daily_path = os.path.join(BASE_DIR, "data", "chart", "daily", f"{ticker}.parquet") # [cite: 6, 28]
+    
+    print(f"[*] [{ticker}] 테스트 및 저장 프로세스를 시작합니다.")
+    
+    try:
+        # 3. 데이터 파일 존재 확인
+        if not os.path.exists(minute_path) or not os.path.exists(daily_path):
+            print(f"[!] 에러: 데이터 파일이 없습니다. 경로를 확인하세요.") # [cite: 6]
+        else:
+            # 4. 데이터 로드
+            m_df = pd.read_parquet(minute_path) # [cite: 6, 187]
+            d_df = pd.read_parquet(daily_path) # [cite: 6, 28]
+            
+            # 5. 전략 및 백테스터 초기화 (k=0.5)
+            test_strategy = VolatilityBreakout(k=0.5) # [cite: 18]
+            backtester = VolatilityBacktest(test_strategy) # [cite: 4]
+            
+            # 6. 실행 (save=True를 추가하여 Parquet 파일 저장을 활성화)
+            print(f"[*] 백테스트 엔진 가동 및 상세 내역 저장 중...")
+            success = backtester.run(ticker, m_df, d_df, save=True) # [cite: 5, 12]
+            
+            if success and backtester.total_summary_logs:
+                res = backtester.total_summary_logs[0] # [cite: 1]
+                print("\n" + "="*45)
+                print(f"   [{ticker}] 백테스트 결과 요약")
+                print("-" * 45)
+                print(f"   누적 수익률   : {res['total_return']:>10.2f}%")
+                print(f"   승률          : {res['win_rate']:>10.2f}%")
+                print(f"   총 거래 횟수  : {res['trade_count']:>10}회")
+                print("="*45)
+                
+                # 저장된 파일 위치 안내
+                save_file = os.path.join(backtester.output_dir, f"{ticker}.parquet") # [cite: 6]
+                if os.path.exists(save_file):
+                    print(f"[*] 상세 매매 내역이 저장되었습니다: \n    {save_file}") # [cite: 6]
+            else:
+                print("[!] 백테스트 결과가 없습니다.")
+                
+    except Exception as e:
+        print(f"[!] 테스트 실행 중 오류 발생: {e}")
+        import traceback
+        traceback.print_exc()

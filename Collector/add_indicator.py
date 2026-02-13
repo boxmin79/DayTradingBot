@@ -37,7 +37,7 @@ class ChartIndicatorAdder:
         sort_cols = ['date', 'time'] if 'time' in combined_df.columns else ['date']
         combined_df = combined_df.sort_values(sort_cols).reset_index(drop=True)
 
-        print(f"[*] {len(combined_df)}행의 데이터를 확인했습니다. 지표 계산을 시작합니다.")
+        # print(f"[*] {len(combined_df)}행의 데이터를 확인했습니다. 지표 계산을 시작합니다.")
 
         # 3. 지표 계산 (factory 활용)
         try:
