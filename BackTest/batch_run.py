@@ -74,12 +74,12 @@ def run_batch_backtest():
         # 수익률 기준 정렬
         summary_df = summary_df.sort_values(by='Total Return (%)', ascending=False)
         
-        # 저장 경로 설정
+        # 저장 경로() 설정
         temp_analyzer = BacktestAnalyzer(VolatilityBreakout().name)
-        save_path = os.path.join(temp_analyzer.result_dir, "total_performance_summary.parquet")
-        
-        # 결과 저장
-        summary_df.to_parquet(save_path, engine='fastparquet', compression='snappy', index=False)
+        save_dir = os.path.join(temp_analyzer.result_dir, "summary")
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, "total_performance_summary.csv")
+        summary_df.to_csv(save_path, index=False, encoding='utf-8-sig')      
         
         # 5. 결과 출력 (신규 추가된 월별 승률 등 포함)
         print("\n" + "="*80)

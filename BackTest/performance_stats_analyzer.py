@@ -14,8 +14,18 @@ if BASE_DIR not in sys.path:
 class PerformanceStatsAnalyzer:
     def __init__(self, strategy_name="volatilitybreakout"):
         self.strategy_name = strategy_name
-        self.result_dir = os.path.join(BASE_DIR, "data", "backtest", "result", self.strategy_name)
-        self.summary_path = os.path.join(self.result_dir, "total_performance_summary.parquet")
+        
+        # 1. 기본 결과 폴더 경로
+        base_result_dir = os.path.join(BASE_DIR, "data", "backtest", "result", self.strategy_name)
+        
+        # 2. 찾기 쉽게 만들 하위 폴더 이름 설정 (summary_report)
+        self.report_dir = os.path.join(base_result_dir, "summary_report")
+        
+        # 3. 폴더가 없으면 자동으로 생성
+        os.makedirs(self.report_dir, exist_ok=True)
+        
+        # 불러올 파일 경로 (원본 데이터)
+        self.summary_path = os.path.join(base_result_dir, "total_performance_summary.parquet")
         
         # 차트 한글 설정
         plt.rcParams['font.family'] = 'Malgun Gothic'
@@ -24,8 +34,15 @@ class PerformanceStatsAnalyzer:
     def load_summary(self):
         """통합 성과 파일을 로드합니다."""
         if not os.path.exists(self.summary_path):
+            # .parquet 파일이 없을 경우를 대비해 .csv 파일도 확인하는 로직 추가
+            csv_path = self.summary_path.replace(".parquet", ".csv")
+            if os.path.exists(csv_path):
+                return pd.read_csv(csv_path, encoding='utf-8-sig')
+            
             print(f"[!] 파일을 찾을 수 없습니다: {self.summary_path}")
             return None
+        
+        # 실제 파일이 Parquet이므로 read_parquet 사용
         return pd.read_parquet(self.summary_path)
 
     def analyze(self, df):
@@ -78,10 +95,10 @@ class PerformanceStatsAnalyzer:
         axes[1].axhline(0, color='black', lw=1)
 
         plt.tight_layout()
-        save_path = os.path.join(self.result_dir, "analysis_distribution.png")
+        save_path = os.path.join(self.report_dir, "analysis_distribution.png")
         plt.savefig(save_path)
         print(f"[*] 분석 차트 저장 완료: {save_path}")
-        plt.show()
+        plt.show()       
 
 # --- [ 하단 실행 코드 ] ---
 if __name__ == "__main__":
@@ -100,7 +117,7 @@ if __name__ == "__main__":
         
         # 5. 선별된 우량 종목 따로 저장 (CSV)
         if not top_performers.empty:
-            save_name = os.path.join(analyzer.result_dir, "top_tier_candidates.csv")
+            save_name = os.path.join(analyzer.report_dir, "top_tier_candidates.csv")
             top_performers.to_csv(save_name, index=False)
             print(f"[*] 우량 종목 후보 리스트 저장 완료: {save_name}")
     else:
