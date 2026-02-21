@@ -3,7 +3,8 @@ import pandas as pd
 import numpy as np
 import scipy.stats as stats
 import matplotlib.pyplot as plt
-import seaborn as sns
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 from time_series_visualizer import TimeSeriesVisualizer
 
 class TimeSeriesAnalyzer():
@@ -51,13 +52,18 @@ class TimeSeriesAnalyzer():
             H, R2, intercept, log_n, log_rs
         """
         symbol = ticker if ticker else self.ticker
-        df = self.get_df(ticker=symbol)
-        # 반환 개수를 5개로 맞춰서 에러 방지
-        if df is None: return None, None, None, None, None
         
-        close_col = 'close' if 'close' in df.columns else 'Close'
-        series = df[close_col].values
+        # 1. 만들어둔 메서드를 호출하여 로그 수익률 데이터 가져오기
+        log_returns = self.get_log_rtns(ticker=symbol)
         
+        # 2. 데이터가 없거나 정상적으로 불러오지 못한 경우 에러 방지
+        if log_returns is None or log_returns.empty: 
+            return None, None, None, None, None
+        
+        # 3. 연산을 위해 순수 numpy 배열(1차원)로 변환
+        series = log_returns.values
+        
+        # 4. 최소 데이터 개수 확인
         if len(series) < 50:
             print(f"[{symbol}] 데이터 부족 (최소 50개 필요)")
             return None, None, None, None, None
@@ -87,8 +93,16 @@ class TimeSeriesAnalyzer():
         # 선형 회귀 분석
         slope, intercept, r_value, p_value, std_err = stats.linregress(log_n, log_rs)
         
-        # 그래프를 그리기 위해 intercept, log_n, log_rs를 추가로 반환합니다.
-        return slope, r_value**2, intercept, log_n, log_rs
+        # 결과를 딕셔너리 형태로 묶어서 반환
+        return {
+            'hurst': slope,           # 허스트 지수 (H)
+            'r_squared': r_value**2,  # R^2 (설명력)
+            'intercept': intercept,   # Y절편 (그래프용)
+            'log_n': log_n,           # X축 데이터 (그래프용)
+            'log_rs': log_rs,         # Y축 데이터 (그래프용)
+            'p_value': p_value,       # 유의 확률 (신뢰도 검증용)
+            'std_err': std_err        # 표준 오차 (신뢰도 검증용)
+        }
 
     def normal_test(self, ticker=None):
         symbol = ticker if ticker else self.ticker
@@ -114,17 +128,97 @@ class TimeSeriesAnalyzer():
             "ks_stat": ks_stat, "ks_p": ks_p
         }
             
-    
+    def adf_test(self, ticker=None):
+        """
+        로그 수익률을 사용하여 ADF(Augmented Dickey-Fuller) 검정을 수행합니다.
+        가상환경에 statsmodels 패키지가 설치되어 있어야 합니다.
+        """
+        # 1. 대상 종목 확정 및 로그 수익률 가져오기
+        symbol = ticker if ticker else self.ticker
+        # 기존에 구현된 get_log_rtns 메서드를 호출하여 일관성 유지
+        log_rtns = self.get_log_rtns(ticker=symbol)
+        
+        if log_rtns is None or len(log_rtns) < 20:
+            print(f"[{symbol}] 데이터가 부족하여 ADF 검정을 수행할 수 없습니다.")
+            return None
+
+        # 2. ADF 검정 실행 (statsmodels 라이브러리 활용)
+        result = adfuller(log_rtns)
+        
+        # 3. 결과 정리 및 반환
+        return {
+            'statistics': result[0],       # 검정 통계량
+            'p-value': result[1],          # p-value (0.05 미만일 경우 정상성 확보)
+            'used_lag': result[2],         # 사용된 시차(lag) 수
+            'n_obs': result[3],            # 관측치 개수
+            'critical_values': result[4],  # 임계값 (1%, 5%, 10%)
+            'is_stationary': result[1] < 0.05  # 정상성 여부 (True/False)
+        }
+        
             
 if __name__ == "__main__":
-    # 시나리오 A: 범용 도구 (ticker 없이 생성)
-    tool = TimeSeriesAnalyzer("005930")
-    h_res = tool.calculate_hurst()
-    log_rtns = tool.get_log_rtns()
-    normal_res = tool.normal_test()
+    # 분석할 종목 티커 설정 (예: 삼성전자 "005930")
+    ticker = "005930"
+    tool = TimeSeriesAnalyzer(ticker)
     
+    print(f"========== [{ticker}] 시계열 데이터 분석 결과 ==========")
+
+    # 1. 허스트 지수 (Hurst Exponent) 결과 출력
+    hurst_res = tool.calculate_hurst()
+    if hurst_res:
+        print("\n[1] 허스트 지수 (Hurst Exponent) 분석")
+        print(f"  - Hurst 지수 (H): {hurst_res['hurst']:.4f}")
+        print(f"  - 설명력 (R²): {hurst_res['r_squared']:.4f}")
+        print(f"  - 유의 확률 (p-value): {hurst_res['p_value']:.4e}")
+        print(f"  - 표준 오차 (std_err): {hurst_res['std_err']:.4e}")
+        
+        # 허스트 지수 해석
+        h = hurst_res['hurst']
+        if h > 0.55:
+            print("  ▶ 해석: 추세성(Persistent)이 존재합니다. (모멘텀 전략 유리)")
+        elif h < 0.45:
+            print("  ▶ 해석: 평균 회귀성(Anti-persistent)이 존재합니다. (역추세/박스권 전략 유리)")
+        else:
+            print("  ▶ 해석: 랜덤 워크(Random Walk)에 가깝습니다. (과거 가격으로 미래 예측 어려움)")
+    else:
+        print("\n[1] 허스트 지수 분석 실패 (데이터 부족 등)")
+
+    # 2. 정규성 검정 (Normality Test) 결과 출력
+    norm_res = tool.normal_test()
+    if norm_res:
+        print("\n[2] 수익률 분포 정규성 검정")
+        print(f"  - 왜도 (Skewness): {norm_res['skew']:.4f} (0에 가까울수록 정규분포)")
+        print(f"  - 첨도 (Kurtosis): {norm_res['kurt']:.4f} (3에 가까울수록 정규분포)")
+        print(f"  - Shapiro-Wilk p-value: {norm_res['shapiro_p']:.4e}")
+        print(f"  - Jarque-Bera p-value: {norm_res['jb_p']:.4e}")
+        print(f"  - K-S Test p-value: {norm_res['ks_p']:.4e}")
+        
+        # p-value가 0.05보다 크면 정규분포를 따른다고 해석 (보통 금융데이터는 안 따름)
+        if norm_res['jb_p'] < 0.05:
+            print("  ▶ 해석: 정규분포를 따르지 않습니다. (Fat-tail 등 금융 데이터의 전형적 특징)")
+        else:
+            print("  ▶ 해석: 정규분포를 따른다고 볼 수 있습니다.")
+    else:
+        print("\n[2] 정규성 검정 실패")
+
+    # 3. ADF 정상성 검정 (Stationarity Test) 결과 출력
+    adf_res = tool.adf_test()
+    if adf_res:
+        print("\n[3] ADF 정상성 검정 (Augmented Dickey-Fuller Test)")
+        print(f"  - 검정 통계량 (Statistics): {adf_res['statistics']:.4f}")
+        print(f"  - 유의 확률 (p-value): {adf_res['p-value']:.4e}")
+        print("  - 임계값 (Critical Values):")
+        for key, value in adf_res['critical_values'].items():
+            print(f"      {key}: {value:.4f}")
+        
+        if adf_res['is_stationary']:
+            print("  ▶ 해석: 정상성(Stationarity)을 확보했습니다. (시계열 모델링 가능)")
+        else:
+            print("  ▶ 해석: 비정상(Non-stationary) 시계열입니다. (차분 등의 추가 전처리 필요)")
+    else:
+        print("\n[3] ADF 검정 실패")
+        
+    print("\n========================================================")
+        
     
-    tool.viz.plot_hurst(hurst_res=h_res)
-    tool.viz.plot_normality(data=log_rtns, stats_res=normal_res)
-    tool.viz.plot_qq(data=log_rtns)
     

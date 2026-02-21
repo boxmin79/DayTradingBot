@@ -42,20 +42,36 @@ class TimeSeriesVisualizer():
 
     def plot_hurst(self, ticker=None, hurst_res=None, show=True, save_path=None):
         if hurst_res is not None:
-                
             symbol = ticker if ticker else self.ticker
             """허스트 지수 Log-Log 플롯"""
-            h_val, r2_val, intercept, log_n, log_rs = hurst_res
+            
+            # 딕셔너리로 변경된 반환값에서 각각의 키(Key)로 데이터를 꺼내옵니다.
+            h_val = hurst_res['hurst']
+            r2_val = hurst_res['r_squared']
+            intercept = hurst_res['intercept']
+            log_n = hurst_res['log_n']
+            log_rs = hurst_res['log_rs']
+            
+            # 선택 사항: p_value도 같이 받아올 수 있습니다.
+            # p_val = hurst_res['p_value']
+            
             self.set_style()
             plt.figure(figsize=(10, 6))
-            plt.scatter(log_n, log_rs, color='royalblue', alpha=0.7)
-            plt.plot(log_n, h_val * log_n + intercept, 'crimson', linestyle='--')
+            plt.scatter(log_n, log_rs, color='royalblue', alpha=0.7, label='Log(R/S)')
             
+            # 선형 회귀선 그리기 (y = 기울기 * x + y절편)
+            plt.plot(log_n, h_val * log_n + intercept, 'crimson', linestyle='--', label=f'Fit (H={h_val:.3f})')
+            
+            # 그래프 제목 및 라벨 설정
             plt.title(f"Hurst Analysis: {symbol} (H={h_val:.3f}, R²={r2_val:.3f})")
+            plt.xlabel('Log(n)')
+            plt.ylabel('Log(R/S)')
+            plt.legend()
+            
             self.save_and_show(plt, save_path, show)
         else:
-            print("데이터가 없습니다.")
-
+            print(f"[{ticker if ticker else self.ticker}] 시각화할 데이터가 없습니다.")
+            
     def plot_qq(self, ticker=None, data=None, show=True, save_path=None):
         if data is not None:
             symbol = ticker if ticker else self.ticker
