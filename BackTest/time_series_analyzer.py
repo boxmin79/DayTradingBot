@@ -4,7 +4,7 @@ import numpy as np
 import scipy.stats as stats
 import matplotlib.pyplot as plt
 from statsmodels.tsa.stattools import adfuller
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from statsmodels.tsa.stattools import acf, pacf
 from time_series_visualizer import TimeSeriesVisualizer
 
 class TimeSeriesAnalyzer():
@@ -155,70 +155,21 @@ class TimeSeriesAnalyzer():
             'is_stationary': result[1] < 0.05  # 정상성 여부 (True/False)
         }
         
+    def get_autocorr_values(self, ticker=None, lags=10):
+        log_rtns = self.get_log_rtns(ticker=ticker)
+        if log_rtns is None: return None
+        
+        # 수치 계산
+        acf_values = acf(log_rtns, nlags=lags)
+        pacf_values = pacf(log_rtns, nlags=lags)
+        
+        # 보기 좋게 데이터프레임으로 정리
+        df_res = pd.DataFrame({
+            'Lag': range(len(acf_values)),
+            'ACF': acf_values,
+            'PACF': pacf_values
+        })
+        return df_res
             
 if __name__ == "__main__":
-    # 분석할 종목 티커 설정 (예: 삼성전자 "005930")
-    ticker = "005930"
-    tool = TimeSeriesAnalyzer(ticker)
-    
-    print(f"========== [{ticker}] 시계열 데이터 분석 결과 ==========")
-
-    # 1. 허스트 지수 (Hurst Exponent) 결과 출력
-    hurst_res = tool.calculate_hurst()
-    if hurst_res:
-        print("\n[1] 허스트 지수 (Hurst Exponent) 분석")
-        print(f"  - Hurst 지수 (H): {hurst_res['hurst']:.4f}")
-        print(f"  - 설명력 (R²): {hurst_res['r_squared']:.4f}")
-        print(f"  - 유의 확률 (p-value): {hurst_res['p_value']:.4e}")
-        print(f"  - 표준 오차 (std_err): {hurst_res['std_err']:.4e}")
-        
-        # 허스트 지수 해석
-        h = hurst_res['hurst']
-        if h > 0.55:
-            print("  ▶ 해석: 추세성(Persistent)이 존재합니다. (모멘텀 전략 유리)")
-        elif h < 0.45:
-            print("  ▶ 해석: 평균 회귀성(Anti-persistent)이 존재합니다. (역추세/박스권 전략 유리)")
-        else:
-            print("  ▶ 해석: 랜덤 워크(Random Walk)에 가깝습니다. (과거 가격으로 미래 예측 어려움)")
-    else:
-        print("\n[1] 허스트 지수 분석 실패 (데이터 부족 등)")
-
-    # 2. 정규성 검정 (Normality Test) 결과 출력
-    norm_res = tool.normal_test()
-    if norm_res:
-        print("\n[2] 수익률 분포 정규성 검정")
-        print(f"  - 왜도 (Skewness): {norm_res['skew']:.4f} (0에 가까울수록 정규분포)")
-        print(f"  - 첨도 (Kurtosis): {norm_res['kurt']:.4f} (3에 가까울수록 정규분포)")
-        print(f"  - Shapiro-Wilk p-value: {norm_res['shapiro_p']:.4e}")
-        print(f"  - Jarque-Bera p-value: {norm_res['jb_p']:.4e}")
-        print(f"  - K-S Test p-value: {norm_res['ks_p']:.4e}")
-        
-        # p-value가 0.05보다 크면 정규분포를 따른다고 해석 (보통 금융데이터는 안 따름)
-        if norm_res['jb_p'] < 0.05:
-            print("  ▶ 해석: 정규분포를 따르지 않습니다. (Fat-tail 등 금융 데이터의 전형적 특징)")
-        else:
-            print("  ▶ 해석: 정규분포를 따른다고 볼 수 있습니다.")
-    else:
-        print("\n[2] 정규성 검정 실패")
-
-    # 3. ADF 정상성 검정 (Stationarity Test) 결과 출력
-    adf_res = tool.adf_test()
-    if adf_res:
-        print("\n[3] ADF 정상성 검정 (Augmented Dickey-Fuller Test)")
-        print(f"  - 검정 통계량 (Statistics): {adf_res['statistics']:.4f}")
-        print(f"  - 유의 확률 (p-value): {adf_res['p-value']:.4e}")
-        print("  - 임계값 (Critical Values):")
-        for key, value in adf_res['critical_values'].items():
-            print(f"      {key}: {value:.4f}")
-        
-        if adf_res['is_stationary']:
-            print("  ▶ 해석: 정상성(Stationarity)을 확보했습니다. (시계열 모델링 가능)")
-        else:
-            print("  ▶ 해석: 비정상(Non-stationary) 시계열입니다. (차분 등의 추가 전처리 필요)")
-    else:
-        print("\n[3] ADF 검정 실패")
-        
-    print("\n========================================================")
-        
-    
     

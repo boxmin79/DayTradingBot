@@ -3,6 +3,7 @@ import seaborn as sns
 import scipy.stats as stats
 import os
 import numpy as np
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 
 class TimeSeriesVisualizer():
     def __init__(self, ticker=None):
@@ -83,3 +84,24 @@ class TimeSeriesVisualizer():
             self.save_and_show(plt, save_path, show)
         else:
             print("데이터가 없습니다.")
+    
+    def plot_autocorrelation(self, ticker=None, log_returns=None, lags=40, show=True, save_path=None):
+        """ACF 및 PACF 그래프 시각화"""
+        if log_returns is not None:
+            symbol = ticker if ticker else self.ticker
+            self.set_style()
+            fig, ax = plt.subplots(1, 2, figsize=(15, 6))
+            
+            # ACF 시각화
+            plot_acf(log_returns, lags=lags, ax=ax[0], color='royalblue', alpha=0.05)
+            ax[0].set_title(f"ACF: {symbol}")
+            
+            # PACF 시각화
+            plot_pacf(log_returns, lags=lags, ax=ax[1], color='crimson', alpha=0.05)
+            ax[1].set_title(f"PACF: {symbol}")
+            
+            plt.tight_layout()
+            self.save_and_show(plt, save_path, show)
+        else:
+            print("시각화할 수익률 데이터가 없습니다.")
+            
