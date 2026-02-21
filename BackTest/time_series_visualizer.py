@@ -1,0 +1,69 @@
+import matplotlib.pyplot as plt
+import seaborn as sns
+import scipy.stats as stats
+import os
+import numpy as np
+
+class TimeSeriesVisualizer():
+    def __init__(self, ticker=None):
+        self.ticker = ticker
+        
+    @staticmethod
+    def set_style():
+        sns.set_theme(style="whitegrid")
+
+    @staticmethod
+    def save_and_show(plt_obj, save_path, show):
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt_obj.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"그래프 저장 완료: {save_path}")
+        if show:
+            plt_obj.show()
+        else:
+            plt_obj.close()
+
+    def plot_normality(self, ticker=None, data=None, stats_res=None, show=True, save_path=None):
+        if (data is not None) and (stats_res is not None):
+            symbol = ticker if ticker else self.ticker
+            """정규분포 곡선 비교 플롯"""
+            self.set_style()
+            plt.figure(figsize=(12, 7))
+            sns.histplot(data, kde=True, color="royalblue", stat='density', bins=100, alpha=0.6)
+            
+            mu, std = data.mean(), data.std()
+            x = np.linspace(data.min(), data.max(), 100)
+            plt.plot(x, stats.norm.pdf(x, mu, std), 'r--', linewidth=2)
+            
+            plt.title(f"Normality Analysis: {symbol}\nSkew: {stats_res['skew']:.2f}, Kurt: {stats_res['kurt']:.2f}")
+            self.save_and_show(plt, save_path, show)
+        else:
+            print("데이터가 없습니다.")
+
+    def plot_hurst(self, ticker=None, hurst_res=None, show=True, save_path=None):
+        if hurst_res is not None:
+                
+            symbol = ticker if ticker else self.ticker
+            """허스트 지수 Log-Log 플롯"""
+            h_val, r2_val, intercept, log_n, log_rs = hurst_res
+            self.set_style()
+            plt.figure(figsize=(10, 6))
+            plt.scatter(log_n, log_rs, color='royalblue', alpha=0.7)
+            plt.plot(log_n, h_val * log_n + intercept, 'crimson', linestyle='--')
+            
+            plt.title(f"Hurst Analysis: {symbol} (H={h_val:.3f}, R²={r2_val:.3f})")
+            self.save_and_show(plt, save_path, show)
+        else:
+            print("데이터가 없습니다.")
+
+    def plot_qq(self, ticker=None, data=None, show=True, save_path=None):
+        if data is not None:
+            symbol = ticker if ticker else self.ticker
+            """Q-Q 플롯"""
+            self.set_style()
+            plt.figure(figsize=(8, 8))
+            stats.probplot(data, dist="norm", plot=plt)
+            plt.title(f"Q-Q Plot: {symbol}")
+            self.save_and_show(plt, save_path, show)
+        else:
+            print("데이터가 없습니다.")

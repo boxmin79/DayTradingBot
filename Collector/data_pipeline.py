@@ -29,10 +29,6 @@ class DataPipeline:
 
         tickers_df = pd.read_parquet(self.ticker_path)
         
-        # [수정] 티커와 상장일을 함께 순회하기 위해 DataFrame 자체를 활용
-        # 컬럼명 호환성 체크 (ticker vs code)
-        code_col = 'ticker' if 'ticker' in tickers_df.columns else 'code'
-        
         total = len(tickers_df)
         success_count = 0
         fail_count = 0
@@ -43,23 +39,26 @@ class DataPipeline:
         print(f"📦 대상 종목 수: {total}개 | 저장 모드: {'활성화' if save else '비활성화'}")
         print("=" * 60)
 
-        # iterrows()를 사용하여 각 행의 정보(상장일 등) 접근
         for i, row in tickers_df.iterrows():
-            ticker = row[code_col]
-            # [추가] 상장일 추출 (없으면 None)
+            ticker = str(row["code"]) # 타입을 문자열로 보장
+            
+            # [보완] 상장일 추출 및 결측치 처리
             listing_date = row.get('listing_date', None)
+            if pd.isna(listing_date): # NaN 값인 경우 None으로 변경
+                listing_date = None
             
             ticker_start = time.time()
             percentage = ((i + 1) / total) * 100
             
-            print(f"[{i+1}/{total}] {percentage:>5.1f}% | 현재 종목: {ticker}", end="\r")
+            # 진행 상황 표시 (엔터 없이 현재 행 유지)
+            print(f"[{i+1}/{total}] {percentage:>5.1f}% | 처리 중: {ticker:<8}", end="\r")
 
             try:
-                # 2. 분봉 업데이트 (상장일 인자 전달 추가)
+                # 2. 분봉 업데이트 (이미 내부에서 datetime 인덱스로 변환됨)
                 df_min = self.min_updater.get_updated_data(ticker, listing_date=listing_date, save=save)
 
                 if df_min is not None and not df_min.empty:
-                    # 3. 일봉 변환 및 저장
+                    # 3. 일봉 변환 및 저장 (datetime 인덱스를 인식하여 resample로 동작)
                     convert_to_daily(
                         df=df_min, 
                         ticker=ticker, 
@@ -68,16 +67,18 @@ class DataPipeline:
                     )
                     success_count += 1
                     status = "완료"
+                    # 메모리 해제 지원
+                    del df_min 
                 else:
                     fail_count += 1
                     status = "데이터 없음"
 
             except Exception as e:
                 fail_count += 1
-                status = f"실패 ({e})"
+                status = f"실패 ({str(e)[:20]}...)" # 에러 메시지 너무 길면 생략
 
             elapsed = time.time() - ticker_start
-            # 줄바꿈 처리를 명확하게 하여 로그 가독성 확보
+            # 최종 결과 한 줄 출력 (가독성을 위해 \r 제거 후 출력)
             print(f"[{i+1}/{total}] {percentage:>5.1f}% | {ticker:<8} | {status:<15} | 소요: {elapsed:.2f}초")
 
         # 최종 요약 출력
@@ -92,4 +93,5 @@ class DataPipeline:
 
 if __name__ == "__main__":
     pipeline = DataPipeline()
+    # 전체 실행 전 테스트를 원하시면 tickers_df.head(10) 등으로 범위를 줄여 테스트하세요.
     pipeline.run_pipeline(save=True)
